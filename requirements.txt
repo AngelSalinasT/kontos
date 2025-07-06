@@ -1,0 +1,6 @@
+python-telegram-bot
+langchain
+langgraph
+langchain-google-genai
+python-dotenv
+langchain-community

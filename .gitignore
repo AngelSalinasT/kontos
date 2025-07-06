@@ -1,0 +1,4 @@
+venv/
+.env
+gastos.db
+__pycache__/
