@@ -138,7 +138,9 @@ def save_to_db_node(state: Dict[str, Any]) -> Dict[str, Any]:
     Nodo que guarda uno o varios movimientos parseados en la base de datos.
     Establece 'final_response'.
     """
-    parsed_movements = state.get("parsed_data")
+    # === ESTA LÍNEA ES LA CLAVE QUE FALTABA O ESTABA MAL ===
+    parsed_movements = state.get("parsed_data") 
+    
     if not parsed_movements or not isinstance(parsed_movements, list):
         return {
             **state,
@@ -152,8 +154,9 @@ def save_to_db_node(state: Dict[str, Any]) -> Dict[str, Any]:
         response_messages = []
         
         current_user_id = state.get("user_id", "1234") # Obtener user_id del estado
+        current_username = state.get("username", "Desconocido") # Obtener username del estado
         
-        for data in parsed_movements:
+        for data in parsed_movements: # <-- Aquí se usa 'parsed_movements'
             # Asegurarse de que la fecha tenga el año actual si no se especifica
             fecha_str = data["fecha"]
             # Intentar parsear "DD Mes" y añadir el año actual
@@ -166,7 +169,7 @@ def save_to_db_node(state: Dict[str, Any]) -> Dict[str, Any]:
             
             insertar_movimiento_tool(
                 user_id=current_user_id,
-                username="UsuarioTelegram", # TODO: Obtener username real de Telegram
+                username=current_username,
                 fecha=fecha_con_año, # Esta fecha se convertirá a YYYY-MM-DD en db.py
                 concepto=data["concepto"],
                 monto=data["monto"],
@@ -176,7 +179,7 @@ def save_to_db_node(state: Dict[str, Any]) -> Dict[str, Any]:
             saved_count += 1
             response_messages.append(f"✅ {data['concepto']} ${data['monto']:.2f}")
         
-        final_response_text = f"✅ Se registraron {saved_count} gastos:\n" + "\n".join(response_messages)
+        final_response_text = f"✅ Se registraron {saved_count} gastos para {current_username}:\n" + "\n".join(response_messages)
         
         return {
             **state,

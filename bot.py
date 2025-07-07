@@ -1,49 +1,32 @@
-# bot.py - Se mantiene igual
+# bot.py
 import os
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from langchain_core.messages import HumanMessage
-from graph import graph # Asegúrate de que 'graph' se importa correctamente
-from telegram.ext import CommandHandler
-
+from graph import graph
 
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mensaje = (
-        "ℹ️ *Cómo usar Kontos:*\n\n"
-        "- Registra movimientos enviando:\n"
-        '"02 Julio Starbucks $120"\n'
-        "- Consulta totales diciendo:\n"
-        '"Total del mes"\n\n'
-        "Más funciones pronto 🚀"
-    )
-    await update.message.reply_text(mensaje)
-
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mensaje = (
-        "👋 Hola, soy Kontos.\n\n"
-        "📌 Registra tus gastos enviando mensajes como:\n"
-        '"05 Julio Soriana $385.30"\n\n'
-        "📌 Pregunta por totales:\n"
-        '"Total del mes"\n\n'
-        "Mantén tus finanzas claras, sin complicaciones. 💸"
-    )
-    await update.message.reply_text(mensaje)
-
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
-    telegram_user_id = str(update.effective_user.id) # Obtener el ID del usuario
-    print(f"📩 Mensaje recibido de {telegram_user_id}: {user_message}")
+    telegram_user_id = str(update.effective_user.id) # ID del usuario
+    telegram_username = update.effective_user.username # Nombre de usuario (puede ser None)
+    telegram_first_name = update.effective_user.first_name # Primer nombre
+    
+    # Usar el username si existe, si no, el primer nombre, si no, el ID
+    display_username = telegram_username if telegram_username else telegram_first_name
+    if not display_username:
+        display_username = f"Usuario_{telegram_user_id}" # Fallback si no hay nombre ni username
+    
+    print(f"📩 Mensaje recibido de {display_username} ({telegram_user_id}): {user_message}")
     
     try:
         result = graph.invoke({
             "messages": [HumanMessage(content=user_message)],
-            "user_id": telegram_user_id, # Pasar el ID del usuario al grafo
+            "user_id": telegram_user_id,
+            "username": display_username, # <-- ¡PASANDO EL NOMBRE DE USUARIO!
         })
         
         final_response = result.get("final_response")
@@ -64,12 +47,9 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN no está configurado en el archivo .env")
         return
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build() # Crear la aplicación del bot
-    app.add_handler(CommandHandler("help", help_command))
-
-    app.add_handler(CommandHandler("start", start_command)) # Manejo del comando /start
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # Manejo de mensajes de texto
-    print("🤖 Bot escuchando...") 
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("🤖 Bot escuchando...")
     app.run_polling()
 
 if __name__ == "__main__":

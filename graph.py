@@ -27,6 +27,7 @@ class State(TypedDict):
     parsed_data: Optional[dict] # Datos parseados del movimiento o consulta
     final_response: Optional[str] # Respuesta final que se enviará al usuario
     user_id: Optional[str] # ID del usuario, opcional para pruebas
+    username: Optional[str] # Nombre de usuario de Telegram, opcional para pruebas
 
 # Función de decisión para el router (se mantiene aquí para la lógica del grafo)
 def route_decision(state: State) -> str:
