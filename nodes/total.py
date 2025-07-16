@@ -124,47 +124,75 @@ Output:"""
 
 def consultar_total_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Nodo que consulta el total de gastos en el período especificado.
-    Establece 'final_response'.
+    Nodo que consulta el total de gastos en el período especificado, desglosado por categoría, y genera observaciones/consejos.
     """
-
-    from tools import consultar_total_quincenal_tool
-        
+    import sqlite3
     data = state["parsed_data"]
-
     if not state.get("parsed_data"):
         return {
             **state,
             "final_response": "❌ No hay información de fechas válida para consultar."
         }
-    
     try:
-        from tools import consultar_total_quincenal_tool # Importar aquí para evitar circular
-        
-        data = state["parsed_data"]
-        
-        current_user_id = state.get("user_id", "default_user") # Obtener del estado
-
-        total = consultar_total_quincenal_tool(
-            user_id=current_user_id, # Usar el user_id
-            fecha_inicio=data["fecha_inicio"],
-            fecha_fin=data["fecha_fin"]
-        )
-        
-        # Asegurarse de que el total sea un flotante y formatearlo
-        total_float = float(total) if isinstance(total, (str, int)) else total
-        
-        response = (
-            f"💰 Total de gastos:\n"
-            f"📅 Del {data['fecha_inicio']} al {data['fecha_fin']}\n"
-            f"💵 ${total_float:,.2f}"
-        )
-        
+        current_user_id = state.get("user_id", "default_user")
+        fecha_inicio = data["fecha_inicio"]
+        fecha_fin = data["fecha_fin"]
+        conn = sqlite3.connect('gastos.db')
+        cursor = conn.cursor()
+        # Desglose por categoría
+        cursor.execute('''
+            SELECT c.nombre, SUM(m.monto) as total
+            FROM movimientos m
+            LEFT JOIN categorias c ON m.categoria_id = c.id
+            WHERE m.user_id = ? AND m.fecha BETWEEN ? AND ?
+            GROUP BY c.nombre
+            ORDER BY total DESC
+        ''', (current_user_id, fecha_inicio, fecha_fin))
+        rows = cursor.fetchall()
+        # Total general
+        cursor.execute('''
+            SELECT SUM(monto) FROM movimientos
+            WHERE user_id = ? AND fecha BETWEEN ? AND ?
+        ''', (current_user_id, fecha_inicio, fecha_fin))
+        total = cursor.fetchone()[0] or 0.0
+        # Ingresos en el periodo
+        cursor.execute('''
+            SELECT SUM(monto) FROM ingresos_fijos
+            WHERE user_id = ? AND fecha_inicio <= ?
+        ''', (current_user_id, fecha_fin))
+        ingresos = cursor.fetchone()[0]
+        conn.close()
+        # Construir desglose
+        if not rows:
+            return {**state, "final_response": f"ℹ️ No hay gastos registrados del {fecha_inicio} al {fecha_fin}."}
+        lines = [f"{cat or 'Sin categoría'}: ${monto:,.2f}" for cat, monto in rows]
+        response = f"📊 Desglose de gastos por categoría del {fecha_inicio} al {fecha_fin}:\n" + "\n".join(lines)
+        response += f"\n\n💵 Total gastado: ${total:,.2f}"
+        # Observaciones/consejos
+        consejos = []
+        if ingresos:
+            balance = ingresos - total
+            response += f"\n💰 Ingresos en el periodo: ${ingresos:,.2f}"
+            response += f"\n📈 Balance: ${balance:,.2f}"
+            if balance < 0:
+                consejos.append("Estás gastando más de lo que ingresas. Considera reducir gastos en las categorías más altas.")
+            elif balance < ingresos * 0.1:
+                consejos.append("Tu margen de ahorro es bajo este periodo. Revisa tus gastos principales.")
+            else:
+                consejos.append("¡Buen trabajo! Tus gastos están por debajo de tus ingresos.")
+        # Consejos por categorías
+        if rows:
+            categoria_mayor, monto_mayor = rows[0]
+            if monto_mayor > total * 0.5:
+                consejos.append(f"La categoría '{categoria_mayor}' representa más del 50% de tus gastos. ¿Es posible optimizarla?")
+            elif monto_mayor > total * 0.3:
+                consejos.append(f"La categoría '{categoria_mayor}' es la más alta. Revisa si puedes reducir gastos ahí.")
+        if consejos:
+            response += "\n\n📝 Observaciones:\n- " + "\n- ".join(consejos)
         return {
             **state,
             "final_response": response
         }
-        
     except Exception as e:
         print(f"❌ Error al consultar total en DB en consultar_total_node: {e}")
         return {

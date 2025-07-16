@@ -7,23 +7,85 @@ DATABASE_NAME = 'gastos.db'
 def init_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
+    # Tabla de categorías
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS categorias (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE,
+            tipo TEXT CHECK(tipo IN ('gasto', 'ingreso'))
+        )
+    ''')
+    # Tabla de gastos fijos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gastos_fijos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            categoria_id INTEGER,
+            concepto TEXT NOT NULL,
+            monto REAL NOT NULL,
+            fecha_inicio TEXT,
+            periodicidad TEXT,
+            FOREIGN KEY (categoria_id) REFERENCES categorias(id),
+            FOREIGN KEY (user_id) REFERENCES usuarios(user_id)
+        )
+    ''')
+    # Tabla de ingresos fijos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ingresos_fijos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            categoria_id INTEGER,
+            concepto TEXT NOT NULL,
+            monto REAL NOT NULL,
+            fecha_inicio TEXT,
+            periodicidad TEXT,
+            FOREIGN KEY (categoria_id) REFERENCES categorias(id),
+            FOREIGN KEY (user_id) REFERENCES usuarios(user_id)
+        )
+    ''')
+    # Tabla de presupuestos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS presupuestos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            categoria_id INTEGER,
+            monto_limite REAL NOT NULL,
+            periodo TEXT,
+            FOREIGN KEY (categoria_id) REFERENCES categorias(id),
+            FOREIGN KEY (user_id) REFERENCES usuarios(user_id)
+        )
+    ''')
+    # Tabla de movimientos (actualizada para usar categoria_id)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS movimientos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
             username TEXT,
-            fecha TEXT NOT NULL, -- Formato YYYY-MM-DD
+            fecha TEXT NOT NULL,
             concepto TEXT NOT NULL,
             monto REAL NOT NULL,
-            categoria TEXT,
+            categoria_id INTEGER,
             origen TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (categoria_id) REFERENCES categorias(id),
+            FOREIGN KEY (user_id) REFERENCES usuarios(user_id)
         )
+    ''')
+    # Tabla de usuarios
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL UNIQUE,  -- Puede ser un identificador externo (Telegram, email, etc.)
+            username TEXT,
+            nombre TEXT,
+            email TEXT,
+            fecha_registro TEXT DEFAULT CURRENT_TIMESTAMP
+        );
     ''')
     conn.commit()
     conn.close()
 
-def insertar_movimiento(user_id, username, fecha, concepto, monto, categoria, origen):
+def insertar_movimiento(user_id, username, fecha, concepto, monto, categoria_id, origen):
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
@@ -43,9 +105,9 @@ def insertar_movimiento(user_id, username, fecha, concepto, monto, categoria, or
             fecha_db_format = datetime.now().strftime('%Y-%m-%d')
             
     cursor.execute('''
-        INSERT INTO movimientos (user_id, username, fecha, concepto, monto, categoria, origen)
+        INSERT INTO movimientos (user_id, username, fecha, concepto, monto, categoria_id, origen)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, username, fecha_db_format, concepto, monto, categoria, origen))
+    ''', (user_id, username, fecha_db_format, concepto, monto, categoria_id, origen))
     conn.commit()
     conn.close()
     print(f"DB: Movimiento insertado: {concepto} - {monto} (Fecha DB: {fecha_db_format})")
