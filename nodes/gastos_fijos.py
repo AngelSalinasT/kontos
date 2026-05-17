@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 import sqlite3
 from nodes.memory import set_user_state
+from utils.json_parser import parse_json_from_text
 
 # Modelo para gasto fijo
 class GastoFijo(BaseModel):
@@ -14,19 +15,6 @@ class GastoFijo(BaseModel):
     periodicidad: str = Field(..., example="mensual")
     fecha_inicio: Optional[str] = Field(None, example="2024-07-01")
 
-# Utilidad para parsear JSON robusto
-def parse_json_from_text(text: str) -> Optional[Any]:
-    try:
-        text = text.strip()
-        text = re.sub(r'```(?:json)?\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                return json.loads(json_str)
-        return None
     except Exception as e:
         print(f"❌ Error parsing JSON in gastos_fijos.py: {e} in text: {text[:200]}...")
         return None

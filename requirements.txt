@@ -4,3 +4,7 @@ langgraph
 langchain-google-genai
 python-dotenv
 langchain-community
+faster-whisper
+easyocr
+Pillow
+pydub

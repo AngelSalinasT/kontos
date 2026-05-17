@@ -5,26 +5,13 @@ from typing import Dict, Any, Optional
 import json
 import re
 from datetime import datetime, timedelta
+from utils.json_parser import parse_json_from_text
 
 # Modelos Pydantic para la salida estructurada
 class Periodo(BaseModel):
     fecha_inicio: str = Field(..., example="2023-07-01")
     fecha_fin: str = Field(..., example="2023-07-31")
 
-# Función de utilidad para parsear JSON de forma robusta
-def parse_json_from_text(text: str) -> Optional[Dict[str, Any]]:
-    """Extrae JSON de forma más robusta."""
-    try:
-        text = text.strip()
-        text = re.sub(r'```(?:json)?\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
-        json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(0)
-            return json.loads(json_str)
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON Decode Error in total.py: {e} in text: {text[:200]}...")
-        return None
     except Exception as e:
         print(f"❌ General Error parsing JSON in total.py: {e} in text: {text[:200]}...")
         return None
