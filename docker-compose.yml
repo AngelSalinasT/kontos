@@ -1,0 +1,9 @@
+services:
+  kontos:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/gastos.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

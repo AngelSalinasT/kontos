@@ -5,7 +5,7 @@ from typing_extensions import TypedDict
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langchain_google_genai import GoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Nodos existentes
 from nodes.router import router_node
@@ -46,10 +46,22 @@ from nodes.despensa.tickets import procesar_ticket_node, listar_tickets_node, el
 
 load_dotenv()
 
-llm = GoogleGenerativeAI(
-    model="gemini-1.5-flash",
-    google_api_key=os.getenv("GEMINI_API_KEY")
-)
+
+class _StrLLM:
+    """Envuelve ChatGoogleGenerativeAI para que .invoke() devuelva str en vez de AIMessage."""
+    def __init__(self, chat_llm):
+        self._llm = chat_llm
+
+    def invoke(self, prompt: str) -> str:
+        result = self._llm.invoke(prompt)
+        return result.content if hasattr(result, "content") else str(result)
+
+
+llm = _StrLLM(ChatGoogleGenerativeAI(
+    model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+    google_api_key=os.getenv("GEMINI_API_KEY"),
+    temperature=0,
+))
 
 
 class State(TypedDict):

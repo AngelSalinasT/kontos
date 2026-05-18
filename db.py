@@ -1,8 +1,9 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
-DATABASE_NAME = 'gastos.db'
+DATABASE_NAME = os.getenv("DATABASE_PATH", "gastos.db")
 
 
 @contextmanager
