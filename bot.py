@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# IDs de Telegram autorizados — separados por coma en ALLOWED_USER_IDS
+# Si la variable está vacía, el bot rechaza a todo el mundo salvo el owner
+_raw_allowed = os.getenv("ALLOWED_USER_IDS", "")
+ALLOWED_IDS: set[str] = {uid.strip() for uid in _raw_allowed.split(",") if uid.strip()}
+
+
+def _autorizado(user_id: str) -> bool:
+    return user_id in ALLOWED_IDS
+
+
+async def _rechazar(update: Update):
+    logger.warning(f"Acceso denegado a user_id={update.effective_user.id}")
+    await update.message.reply_text("⛔ No tienes acceso a este bot.")
+
 
 def _display_name(user) -> str:
     return user.username or user.first_name or f"Usuario_{user.id}"
@@ -62,6 +76,8 @@ async def _invocar_y_responder(update: Update, state: dict, user_id: str, texto_
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if not _autorizado(str(user.id)):
+        await _rechazar(update); return
     nombre = user.first_name or "amigo"
     await update.message.reply_text(
         f"👋 Hola {nombre}! Soy Kontos, tu asistente de finanzas y despensa.\n\n"
@@ -78,6 +94,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
+    if not _autorizado(user_id):
+        await _rechazar(update); return
     username = _display_name(user)
     text = update.message.text.strip()
 
@@ -90,6 +108,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Descarga audio de voz, transcribe con Whisper y procesa como texto."""
     user = update.effective_user
     user_id = str(user.id)
+    if not _autorizado(user_id):
+        await _rechazar(update); return
     username = _display_name(user)
 
     await update.message.reply_text("🎙️ Transcribiendo tu audio...")
@@ -130,6 +150,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Descarga foto de ticket y la pasa al nodo procesar_ticket."""
     user = update.effective_user
     user_id = str(user.id)
+    if not _autorizado(user_id):
+        await _rechazar(update); return
     username = _display_name(user)
 
     await update.message.reply_text("🧾 Procesando ticket...")
@@ -170,6 +192,10 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
+    if ALLOWED_IDS:
+        logger.info(f"🔒 Acceso restringido a: {ALLOWED_IDS}")
+    else:
+        logger.warning("⚠️  ALLOWED_USER_IDS vacío — nadie puede acceder al bot")
     logger.info("🤖 Kontos bot escuchando...")
     app.run_polling()
 
