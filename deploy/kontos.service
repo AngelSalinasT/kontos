@@ -1,0 +1,18 @@
+[Unit]
+Description=Kontos Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/kontos
+EnvironmentFile=/opt/kontos/.env
+ExecStart=/opt/kontos/venv/bin/python3 bot.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
