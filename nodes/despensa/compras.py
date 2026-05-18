@@ -81,10 +81,20 @@ Output:"""
         upsert_usuario(conn, user_id, username)
         for item in data:
             nombre = item.get("producto", "")
+            # Buscar por el nombre completo primero; si no, por la primera palabra significativa
             row = conn.execute(
                 "SELECT id, nombre FROM productos WHERE user_id = ? AND nombre LIKE ? AND activo = 1 LIMIT 1",
                 (user_id, f"%{nombre}%")
             ).fetchone()
+            if not row:
+                palabras = [p for p in nombre.split() if len(p) > 2]
+                for palabra in palabras:
+                    row = conn.execute(
+                        "SELECT id, nombre FROM productos WHERE user_id = ? AND nombre LIKE ? AND activo = 1 LIMIT 1",
+                        (user_id, f"%{palabra}%")
+                    ).fetchone()
+                    if row:
+                        break
 
             if not row:
                 no_encontradas.append(nombre)
@@ -116,8 +126,10 @@ Output:"""
 def listar_compras_node(state: Dict[str, Any], llm) -> Dict[str, Any]:
     user_input = state["messages"][-1].content
     hoy = datetime.now()
-    prompt = f"""El usuario quiere ver el historial de compras de despensa.
-Responde SOLO con JSON: {{"producto": "string o null", "desde": "YYYY-MM-DD o null", "hasta": "YYYY-MM-DD o null"}}
+    prompt = f"""El usuario quiere ver su historial de compras de despensa.
+Extrae filtros SOLO si el usuario menciona un producto específico o un periodo concreto.
+Palabras genéricas como "despensa", "compras", "historial", "todo" NO son filtros de producto.
+Responde SOLO con JSON: {{"producto": null, "desde": null, "hasta": null}}
 Hoy es {hoy.strftime('%Y-%m-%d')}.
 Input: "{user_input}"
 Output:"""
@@ -164,6 +176,18 @@ Output:"""
     data = parse_json_from_text(llm.invoke(prompt))
     if not data or "id" not in data:
         return {**state, "final_response": "❌ Indica el ID de la compra a corregir. Usa 'historial compras' para verlos."}
+
+    # Normalizar variantes de estructura del LLM
+    if "campos_a_cambiar" in data and isinstance(data["campos_a_cambiar"], dict):
+        data.update(data.pop("campos_a_cambiar"))
+    if "campo_a_cambiar" in data and "nuevo_valor" in data:
+        data[data.pop("campo_a_cambiar")] = data.pop("nuevo_valor")
+
+    # Convertir id a int si viene como string
+    try:
+        data["id"] = int(data["id"])
+    except (ValueError, TypeError):
+        pass
 
     user_id = state.get("user_id", "1234")
     campos, valores = [], []

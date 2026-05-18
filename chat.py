@@ -120,10 +120,17 @@ def _handle_seed():
 
 
 def run_once(mensaje: str):
-    """Modo no interactivo: un mensaje y salir."""
+    """Modo no interactivo: un mensaje y salir. Soporta /foto y /voz."""
     init_db()
-    respuesta = _invocar(mensaje)
-    print(respuesta)
+    low = mensaje.lower()
+    if low.startswith("/foto"):
+        print(_handle_foto(mensaje[5:]))
+    elif low.startswith("/voz"):
+        print(_handle_voz(mensaje[4:]))
+    elif low == "/seed":
+        print(_handle_seed())
+    else:
+        print(_invocar(mensaje))
 
 
 def run_interactive():

@@ -55,9 +55,11 @@ def listar_productos_node(state: Dict[str, Any], llm) -> Dict[str, Any]:
     user_input = state["messages"][-1].content
     user_id = state.get("user_id", "1234")
 
-    # Detectar filtro opcional
-    prompt = f"""El usuario quiere ver su lista de productos. ¿Menciona algún filtro?
-Responde SOLO con JSON: {{"categoria": "string o null", "tienda": "string o null", "solo_activos": true}}
+    # Detectar filtro explícito (solo si el usuario menciona categoría o tienda específica)
+    prompt = f"""El usuario quiere ver productos de su despensa.
+¿Menciona EXPLÍCITAMENTE una categoría (ej: "solo higiene", "categoría limpieza") o tienda específica?
+"ver despensa", "mis productos", "qué tengo" NO son filtros — devuelve nulls.
+Responde SOLO con JSON: {{"categoria": null, "tienda": null, "solo_activos": true}}
 Input: "{user_input}"
 Output:"""
     filtro = parse_json_from_text(llm.invoke(prompt)) or {}
@@ -107,6 +109,10 @@ Output:"""
     if not data:
         return {**state, "final_response": "❌ No entendí qué producto editar."}
 
+    # El LLM a veces anida los campos en "campos_a_cambiar" — aplanar
+    if "campos_a_cambiar" in data and isinstance(data["campos_a_cambiar"], dict):
+        data.update(data.pop("campos_a_cambiar"))
+
     user_id = state.get("user_id", "1234")
 
     if "busqueda" in data:
@@ -124,6 +130,10 @@ Output:"""
         return {**state, "final_response": "❌ Indica el ID del producto a editar."}
 
     campos, valores = [], []
+    # "precio" es alias de "precio_ref" para facilitar el lenguaje natural
+    if "precio" in data and "precio_ref" not in data:
+        data["precio_ref"] = data.pop("precio")
+
     with get_conn() as conn:
         for campo in ("nombre", "marca", "unidad", "precio_ref", "tienda_pref"):
             if campo in data:

@@ -94,6 +94,10 @@ Output:"""
         return {**state, "final_response": "❌ No entendí de qué producto quieres la predicción."}
 
     user_id = state.get("user_id", "1234")
+    # Eliminar artículos españoles del nombre extraído para mejorar el match
+    ARTICULOS = {"el", "la", "los", "las", "un", "una", "unos", "unas", "del", "al"}
+    nombre_busqueda = " ".join(w for w in data["producto"].split() if w.lower() not in ARTICULOS)
+
     with get_conn() as conn:
         row = conn.execute(
             '''SELECT p.nombre, p.precio_ref, p.tienda_pref,
@@ -102,8 +106,23 @@ Output:"""
                LEFT JOIN patrones_despensa pd ON p.id = pd.producto_id
                WHERE p.user_id = ? AND p.nombre LIKE ? AND p.activo = 1
                LIMIT 1''',
-            (user_id, f"%{data['producto']}%")
+            (user_id, f"%{nombre_busqueda}%")
         ).fetchone()
+        # Fallback: buscar por primera palabra significativa
+        if not row:
+            for palabra in nombre_busqueda.split():
+                if len(palabra) > 2:
+                    row = conn.execute(
+                        '''SELECT p.nombre, p.precio_ref, p.tienda_pref,
+                                  pd.frec_prom_dias, pd.ultima_compra, pd.proxima_estimada, pd.num_registros
+                           FROM productos p
+                           LEFT JOIN patrones_despensa pd ON p.id = pd.producto_id
+                           WHERE p.user_id = ? AND p.nombre LIKE ? AND p.activo = 1
+                           LIMIT 1''',
+                        (user_id, f"%{palabra}%")
+                    ).fetchone()
+                    if row:
+                        break
 
     if not row:
         return {**state, "final_response": f"❌ No encontré '{data['producto']}' en tu despensa."}
