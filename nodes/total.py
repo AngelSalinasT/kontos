@@ -12,10 +12,6 @@ class Periodo(BaseModel):
     fecha_inicio: str = Field(..., example="2023-07-01")
     fecha_fin: str = Field(..., example="2023-07-31")
 
-    except Exception as e:
-        print(f"❌ General Error parsing JSON in total.py: {e} in text: {text[:200]}...")
-        return None
-
 def parse_total_node(state: Dict[str, Any], llm) -> Dict[str, Any]:
     """
     Nodo que parsea la solicitud de consulta de totales usando LLM.

@@ -15,10 +15,6 @@ class IngresoFijo(BaseModel):
     periodicidad: str = Field(..., example="mensual")
     fecha_inicio: Optional[str] = Field(None, example="2024-07-01")
 
-    except Exception as e:
-        print(f"❌ Error parsing JSON in ingresos_fijos.py: {e} in text: {text[:200]}...")
-        return None
-
 def parse_ingresos_fijos_node(state: Dict[str, Any], llm) -> Dict[str, Any]:
     """
     Nodo que parsea uno o varios ingresos fijos desde el mensaje del usuario usando LLM.

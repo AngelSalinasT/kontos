@@ -14,10 +14,6 @@ class Movimiento(BaseModel):
     monto: float = Field(gt=0, example=385.30)
     categoria: str = Field("General", example="Comida")  # Campo para categoría
 
-    except Exception as e:
-        print(f"❌ General Error parsing JSON in gastos.py: {e} in text: {text[:200]}...")
-        return None
-
 def parse_movement_node(state: Dict[str, Any], llm) -> Dict[str, Any]:
     """
     Nodo que parsea la información de uno o varios gastos específicos usando LLM.
