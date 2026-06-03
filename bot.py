@@ -162,7 +162,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             img_path = tmp.name
         await tg_file.download_to_drive(img_path)
 
-        caption = update.message.caption or "procesar ticket"
+        caption = update.message.caption or "Te mando esta foto, regístrala donde corresponda."
         state = _build_state(user_id, username, caption, imagen_path=img_path)
 
         await _invocar_y_responder(update, context, state, user_id, "[foto de ticket]")

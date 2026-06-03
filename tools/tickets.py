@@ -14,7 +14,7 @@ def _ocr_imagen(imagen_path: str) -> str:
     try:
         import easyocr
         reader = easyocr.Reader(["es", "en"], gpu=False, verbose=False)
-        return "\n".join(easyocr.Reader(["es", "en"], gpu=False, verbose=False).readtext(imagen_path, detail=0))
+        return "\n".join(reader.readtext(imagen_path, detail=0))
     except ImportError:
         pass
     try:
@@ -26,20 +26,25 @@ def _ocr_imagen(imagen_path: str) -> str:
 
 
 @tool
-def procesar_ticket() -> str:
-    """Procesa la foto de un ticket de compra con OCR y registra las compras en la despensa automáticamente.
-    Úsala cuando el usuario envíe una foto de su ticket o recibo de compra.
-    No necesita argumentos; la imagen ya está disponible en el contexto.
+def procesar_imagen() -> str:
+    """Procesa una foto que envió el usuario (ticket de compra, estado de cuenta,
+    captura de movimientos de tarjeta/banco, o comprobante de un pago) con OCR.
+    Detecta automáticamente qué tipo de imagen es y la registra donde corresponde:
+    - Ticket de compra de súper → productos en la despensa + el total como gasto.
+    - Estado de cuenta / movimientos → cada cargo como gasto.
+    - Un solo pago/comprobante → un gasto.
+    Úsala SIEMPRE que el usuario mande una foto. No necesita argumentos; la imagen
+    ya está disponible en el contexto.
     """
     imagen_path = get_imagen_path()
     if not imagen_path or not os.path.exists(imagen_path):
-        return "❌ No se recibió ninguna imagen de ticket válida."
+        return "❌ No se recibió ninguna imagen válida."
 
     texto_ocr = _ocr_imagen(imagen_path)
-    logger.info("OCR ticket (%d chars): %s", len(texto_ocr), texto_ocr[:300].replace("\n", " | "))
+    logger.info("OCR imagen (%d chars): %s", len(texto_ocr), texto_ocr[:300].replace("\n", " | "))
     if texto_ocr.startswith("ERROR_OCR"):
         logger.error("Fallo OCR: %s", texto_ocr)
-        return f"❌ No pude leer la imagen. Instala easyocr.\n{texto_ocr}"
+        return f"❌ No pude leer la imagen. Intenta con una foto más nítida.\n{texto_ocr}"
 
     hoy = datetime.now().strftime("%Y-%m-%d")
     user_id = get_user_id()
@@ -59,52 +64,129 @@ def procesar_ticket() -> str:
         catalogo = conn.execute("SELECT id, nombre FROM productos WHERE user_id = ? AND activo = 1", (user_id,)).fetchall()
 
     nombres_catalogo = [r["nombre"] for r in catalogo]
-    prompt = f"""Analiza este ticket y extrae los productos. Mapea al catálogo del usuario cuando coincida.
-Catálogo: {nombres_catalogo}
-Ticket:
+    prompt = f"""Eres un extractor de datos financieros. Analiza el texto OCR de una imagen que envió el usuario y clasifícala:
+- "ticket_compra": ticket/recibo de compra en una tienda (súper, farmacia…) con lista de productos.
+- "estado_cuenta": estado de cuenta o lista de varios movimientos/transacciones de tarjeta o banco.
+- "gasto_suelto": comprobante de UN solo pago/cargo (transferencia, recibo de servicio, una compra individual).
+- "desconocido": no se puede determinar o no es financiero.
+
+Catálogo de despensa del usuario (mapea productos SOLO si es ticket_compra): {nombres_catalogo}
+
+Texto OCR:
 ---
-{texto_ocr[:3000]}
+{texto_ocr[:3500]}
 ---
-Responde SOLO con JSON:
-{{"tienda": "string o null", "fecha": "YYYY-MM-DD (usa {hoy} si no aparece)", "total": float o null,
-  "productos": [{{"nombre_catalogo": "nombre exacto del catálogo o null", "nombre_ticket": "como aparece", "precio": float o null, "cantidad": float}}]}}"""
+
+Responde SOLO con JSON válido, sin texto adicional:
+{{"tipo": "ticket_compra|estado_cuenta|gasto_suelto|desconocido",
+  "tienda": "nombre de la tienda o null",
+  "fecha": "YYYY-MM-DD (usa {hoy} si no aparece)",
+  "total": <número o null: total del ticket_compra>,
+  "productos": [{{"nombre_catalogo": "nombre EXACTO del catálogo si coincide, si no null", "nombre_ticket": "como aparece", "precio": <número o null>, "cantidad": <número>}}],
+  "movimientos": [{{"concepto": "descripción del cargo", "monto": <número positivo>, "fecha": "YYYY-MM-DD", "categoria": "Comida|Transporte|Entretenimiento|Servicios|Salud|Compras|General"}}]}}
+
+Reglas: 'productos' solo para ticket_compra. 'movimientos' solo para estado_cuenta o gasto_suelto, e incluye ÚNICAMENTE cargos/gastos (NO pagos a la tarjeta, abonos, depósitos ni intereses a favor)."""
 
     resp = _llm.invoke(prompt)
     raw = resp.content if hasattr(resp, "content") else str(resp)
     data = parse_json_from_text(raw)
     if not data:
-        logger.warning("No se pudo parsear JSON del ticket. Respuesta LLM: %s", str(raw)[:500])
-        return "❌ No pude interpretar el ticket. Intenta con una foto más nítida."
-    logger.info("Ticket parseado: tienda=%s total=%s productos=%d",
-                data.get("tienda"), data.get("total"), len(data.get("productos", [])))
+        logger.warning("No se pudo parsear JSON de la imagen. Respuesta LLM: %s", str(raw)[:500])
+        return "❌ No pude interpretar la imagen. Intenta con una foto más nítida."
+
+    tipo = (data.get("tipo") or "").lower()
+    logger.info("Imagen clasificada como '%s' (tienda=%s total=%s productos=%d movimientos=%d)",
+                tipo, data.get("tienda"), data.get("total"),
+                len(data.get("productos") or []), len(data.get("movimientos") or []))
+
+    if tipo == "ticket_compra":
+        return _registrar_ticket(user_id, username, data, catalogo, imagen_path, hoy)
+    if tipo in ("estado_cuenta", "gasto_suelto"):
+        return _registrar_movimientos(user_id, username, data, hoy)
+    return ("🤔 No logré identificar si es un ticket de compra o un estado de cuenta. "
+            "¿Me dices qué es, o mandas una foto más clara?")
+
+
+def _registrar_ticket(user_id, username, data, catalogo, imagen_path, hoy) -> str:
+    """Ticket de súper: registra productos en la despensa y el total como gasto."""
+    from db import get_or_create_categoria
+    fecha = data.get("fecha") or hoy
+    tienda = data.get("tienda")
+    total = data.get("total")
 
     with get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO tickets_ocr (user_id, fecha, tienda, total, imagen_path, procesado) VALUES (?,?,?,?,?,1)",
-            (user_id, data.get("fecha", hoy), data.get("tienda"), data.get("total"), imagen_path),
+            (user_id, fecha, tienda, total, imagen_path),
         )
         ticket_id = cur.lastrowid
         cat_map = {r["nombre"].lower(): r["id"] for r in catalogo}
         registradas, ignoradas = [], []
-        for item in data.get("productos", []):
+        for item in data.get("productos") or []:
             nombre_cat = item.get("nombre_catalogo")
-            if not nombre_cat:
+            if not nombre_cat or nombre_cat.lower() not in cat_map:
                 ignoradas.append(item.get("nombre_ticket", "?")); continue
-            producto_id = cat_map.get(nombre_cat.lower())
-            if not producto_id:
-                ignoradas.append(item.get("nombre_ticket", "?")); continue
+            producto_id = cat_map[nombre_cat.lower()]
             conn.execute(
                 "INSERT INTO compras_despensa (producto_id, user_id, ticket_id, fecha, precio, cantidad, tienda, fuente) VALUES (?,?,?,?,?,?,?,'ocr')",
-                (producto_id, user_id, ticket_id, data.get("fecha", hoy), item.get("precio"), item.get("cantidad", 1), data.get("tienda")),
+                (producto_id, user_id, ticket_id, fecha, item.get("precio"), item.get("cantidad", 1), tienda),
             )
             _recalcular_patron(conn, producto_id)
             registradas.append(nombre_cat)
 
-    respuesta = f"🧾 Ticket — {data.get('tienda', 'tienda desconocida')}\n"
-    if data.get("total"): respuesta += f"Total: ${data['total']:.2f}\n"
-    if registradas: respuesta += f"\n✅ Registradas ({len(registradas)}):\n" + "\n".join(f"• {n}" for n in registradas)
-    if ignoradas: respuesta += f"\n⚠️ No encontrados ({len(ignoradas)}):\n" + "\n".join(f"• {n}" for n in ignoradas) + "\n\nAgrega los faltantes con 'agregar producto'."
+        # El ticket también es un gasto: registra el total en movimientos.
+        gasto_registrado = False
+        if total:
+            cat_id = get_or_create_categoria(conn, "Despensa", "gasto")
+            conn.execute(
+                "INSERT INTO movimientos (user_id, username, fecha, concepto, monto, categoria_id, origen) VALUES (?,?,?,?,?,?,'ocr')",
+                (user_id, username, fecha, f"Compra {tienda or 'súper'}", total, cat_id),
+            )
+            gasto_registrado = True
+
+    respuesta = f"🧾 Ticket — {tienda or 'tienda desconocida'}\n"
+    if total:
+        respuesta += f"Total: ${total:.2f}"
+        if gasto_registrado:
+            respuesta += " (registrado como gasto 💸)"
+        respuesta += "\n"
+    if registradas:
+        respuesta += f"\n✅ Despensa ({len(registradas)}):\n" + "\n".join(f"• {n}" for n in registradas)
+    if ignoradas:
+        respuesta += f"\n⚠️ No están en tu despensa ({len(ignoradas)}):\n" + "\n".join(f"• {n}" for n in ignoradas) + "\n\nAgrégalos con 'agregar producto' si quieres seguirlos."
     return respuesta
+
+
+def _registrar_movimientos(user_id, username, data, hoy) -> str:
+    """Estado de cuenta o gasto suelto: registra cada cargo como gasto en movimientos."""
+    from db import get_or_create_categoria
+    movs = data.get("movimientos") or []
+    if not movs:
+        return ("ℹ️ Detecté un estado de cuenta pero no encontré cargos para registrar "
+                "(quizá solo había pagos o abonos). ¿Quieres que registre algo en específico?")
+
+    registrados, total = [], 0.0
+    with get_conn() as conn:
+        for m in movs:
+            monto = m.get("monto")
+            concepto = (m.get("concepto") or "Cargo").strip()
+            if monto is None or monto <= 0:
+                continue
+            fecha = m.get("fecha") or hoy
+            cat_id = get_or_create_categoria(conn, m.get("categoria") or "General", "gasto")
+            conn.execute(
+                "INSERT INTO movimientos (user_id, username, fecha, concepto, monto, categoria_id, origen) VALUES (?,?,?,?,?,?,'ocr')",
+                (user_id, username, fecha, concepto, monto, cat_id),
+            )
+            registrados.append((fecha, concepto, monto, m.get("categoria") or "General"))
+            total += monto
+
+    if not registrados:
+        return "ℹ️ No encontré cargos válidos para registrar en la imagen."
+
+    lines = [f"• {f} | {c} | ${mo:.2f} [{cat}]" for f, c, mo, cat in registrados]
+    return (f"💸 Registré {len(registrados)} gasto(s):\n" + "\n".join(lines) +
+            f"\n\nTotal: ${total:.2f}")
 
 
 @tool

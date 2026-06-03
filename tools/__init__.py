@@ -34,7 +34,7 @@ from tools.presupuestos import (
     eliminar_presupuesto,
 )
 from tools.tickets import (
-    procesar_ticket,
+    procesar_imagen,
     listar_tickets,
     eliminar_ticket,
 )
@@ -67,7 +67,7 @@ ALL_TOOLS = [
     ver_presupuestos,
     editar_presupuesto,
     eliminar_presupuesto,
-    procesar_ticket,
+    procesar_imagen,
     listar_tickets,
     eliminar_ticket,
 ]
