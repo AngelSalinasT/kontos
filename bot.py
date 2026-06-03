@@ -1,9 +1,12 @@
 import os
+import re
+import html as _html
 import logging
 import tempfile
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
+from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from langchain_core.messages import HumanMessage
 from graph import graph
@@ -43,6 +46,40 @@ def _display_name(user) -> str:
     return user.username or user.first_name or f"Usuario_{user.id}"
 
 
+# ── Formato Telegram ─────────────────────────────────────────────────────────
+# Gemini escribe markdown (**negrita**, *cursiva*, `código`), que Telegram NO
+# renderiza sin parse_mode. Lo convertimos al HTML que Telegram sí entiende.
+
+_CODEBLOCK = re.compile(r"```(?:\w+)?\n?(.*?)```", re.DOTALL)
+_INLINECODE = re.compile(r"`([^`\n]+?)`")
+_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_BOLD_ALT = re.compile(r"__(.+?)__", re.DOTALL)
+_ITALIC = re.compile(r"(?<![\*\w])\*(?!\s)(.+?)(?<!\s)\*(?!\*)", re.DOTALL)
+_ITALIC_ALT = re.compile(r"(?<![_\w])_(?!\s)(.+?)(?<!\s)_(?![_\w])")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+
+
+def _telegram_html(text: str) -> str:
+    """Convierte el markdown ligero del LLM al HTML que renderiza Telegram."""
+    text = _HEADING.sub("", text)                  # quita encabezados markdown
+    text = _html.escape(text, quote=False)         # protege & < >
+    text = _CODEBLOCK.sub(lambda m: f"<pre>{m.group(1).strip()}</pre>", text)
+    text = _BOLD.sub(r"<b>\1</b>", text)
+    text = _BOLD_ALT.sub(r"<b>\1</b>", text)
+    text = _INLINECODE.sub(r"<code>\1</code>", text)
+    text = _ITALIC.sub(r"<i>\1</i>", text)
+    text = _ITALIC_ALT.sub(r"<i>\1</i>", text)
+    return text
+
+
+async def _responder(message, texto: str):
+    """Envía con formato HTML; si el HTML quedara inválido, manda texto plano."""
+    try:
+        await message.reply_text(_telegram_html(texto), parse_mode=ParseMode.HTML)
+    except BadRequest:
+        await message.reply_text(texto)
+
+
 def _build_state(user_id: str, username: str, text: str, imagen_path: str = None, es_voz: bool = False) -> dict:
     from langchain_core.messages import AIMessage
     historial = cargar_historial(user_id, limite=20)
@@ -68,7 +105,7 @@ async def _invocar_y_responder(update: Update, context: ContextTypes.DEFAULT_TYP
         guardar_mensaje(user_id, "inbound", texto_original, update.message.message_id)
         guardar_mensaje(user_id, "outbound", respuesta)
 
-        await update.message.reply_text(respuesta)
+        await _responder(update.message, respuesta)
     except Exception as e:
         logger.error(f"Error invocando grafo: {e}", exc_info=True)
         await update.message.reply_text("❌ Error interno. Intenta de nuevo.")

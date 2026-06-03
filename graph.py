@@ -35,7 +35,12 @@ Estilo de respuesta:
 - No expliques qué herramienta vas a usar ni tu proceso interno; solo da el resultado útil.
 - Si falta un dato esencial (como el monto), pregunta solo ese dato, en una línea.
 - Para gastos, infiere la categoría según el concepto cuando Angel no la mencione.
-- Si no se especifica fecha, usa la de hoy.\
+- Si no se especifica fecha, usa la de hoy.
+
+Formato (es Telegram, no WhatsApp):
+- Para resaltar usa **negrita** (doble asterisco) y, para listas, viñetas con "• " al inicio de cada línea.
+- Cursiva con *un asterisco* o `código` para montos/nombres si ayuda. Nada de tablas, encabezados (#) ni HTML.
+- Aprovecha los saltos de línea para que se lea ordenado en el chat.\
 """
 
 llm = ChatGoogleGenerativeAI(
