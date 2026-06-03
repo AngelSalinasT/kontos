@@ -170,7 +170,29 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error procesando foto: {e}", exc_info=True)
-        await update.message.reply_text("❌ Error procesando la imagen del ticket.")
+        from telegram.error import TimedOut, NetworkError
+        if isinstance(e, (TimedOut, NetworkError)):
+            await update.message.reply_text("⏱️ Se me fue la señal al bajar la foto. Mándamela de nuevo, porfa.")
+        else:
+            await update.message.reply_text("❌ No pude procesar la imagen. Intenta con otra foto.")
+
+
+# ── Error handler global ────────────────────────────────────────────────────────
+
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Captura cualquier excepción no manejada para no spamear tracebacks crudos."""
+    err = context.error
+    logger.error("Excepción no manejada: %s", err, exc_info=err)
+    # Si fue un timeout de red, avísale al usuario con algo accionable.
+    if isinstance(update, Update) and update.effective_message:
+        from telegram.error import TimedOut, NetworkError
+        if isinstance(err, (TimedOut, NetworkError)):
+            try:
+                await update.effective_message.reply_text(
+                    "⏱️ Se me fue la señal un momento. Vuelve a enviármelo, por favor."
+                )
+            except Exception:
+                pass
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -180,12 +202,23 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN no configurado en .env")
         return
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        # Timeouts generosos: get_file/descargas de fotos se cortaban con el default (~5s).
+        .connect_timeout(15)
+        .read_timeout(30)
+        .write_timeout(30)
+        .media_write_timeout(60)
+        .pool_timeout(15)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_error_handler(_on_error)
 
     if ALLOWED_IDS:
         logger.info(f"🔒 Acceso restringido a: {ALLOWED_IDS}")
