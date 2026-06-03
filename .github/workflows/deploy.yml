@@ -1,0 +1,70 @@
+name: Deploy a archlinux
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Evita despliegues solapados; deja terminar el que está en curso.
+concurrency:
+  group: deploy-archlinux
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, kontos-arch]
+    env:
+      APP_DIR: /home/angel/kontos
+      SERVICE: kontos.service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Backup del estado actual
+        run: |
+          cd "$APP_DIR"
+          ts=$(date +%Y%m%d_%H%M%S)
+          mkdir -p .deploy_bak/"$ts"
+          find . -maxdepth 2 -name '*.py' -not -path './venv/*' -not -path './.deploy_bak/*' \
+            -exec cp --parents {} .deploy_bak/"$ts"/ \; 2>/dev/null || true
+          # Conserva solo los 10 backups más recientes.
+          ls -1dt .deploy_bak/*/ 2>/dev/null | tail -n +11 | xargs -r rm -rf
+          echo "backup -> .deploy_bak/$ts"
+
+      - name: Sincronizar código a $APP_DIR
+        run: |
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'gastos.db' \
+            --exclude '.env' \
+            --exclude 'venv/' \
+            --exclude '__pycache__/' \
+            --exclude '.deploy_bak/' \
+            "$GITHUB_WORKSPACE/" "$APP_DIR/"
+
+      - name: Instalar dependencias (si cambió requirements.txt)
+        run: |
+          cd "$APP_DIR"
+          ./venv/bin/pip install -q -r requirements.txt
+
+      - name: Validar sintaxis con el venv
+        run: |
+          cd "$APP_DIR"
+          ./venv/bin/python -m py_compile \
+            $(find . -name '*.py' -not -path './venv/*' -not -path './.deploy_bak/*')
+
+      - name: Reiniciar servicio
+        run: sudo systemctl restart "$SERVICE"
+
+      - name: Verificar arranque
+        run: |
+          sleep 5
+          if ! systemctl is-active --quiet "$SERVICE"; then
+            echo "::error::El servicio no quedó activo tras el restart"
+            journalctl -u "$SERVICE" --no-pager -n 30 --since '40 seconds ago'
+            exit 1
+          fi
+          echo "✅ $SERVICE activo"
+          journalctl -u "$SERVICE" --no-pager -n 8 --since '20 seconds ago' \
+            | grep -vE 'api\.telegram\.org/bot' || true
