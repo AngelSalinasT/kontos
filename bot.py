@@ -3,10 +3,12 @@ import logging
 import tempfile
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from langchain_core.messages import HumanMessage
 from graph import graph
 from nodes.historial import guardar_mensaje, cargar_historial
+from context import set_user_context
 
 load_dotenv()
 
@@ -14,6 +16,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
 )
+# httpx loguea cada request con la URL completa, lo que filtra el token del bot
+# (https://api.telegram.org/bot<TOKEN>/...) al journal. Subir a WARNING lo evita.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -37,32 +43,28 @@ def _display_name(user) -> str:
     return user.username or user.first_name or f"Usuario_{user.id}"
 
 
-def _build_state(user_id: str, username: str, text: str, **extra) -> dict:
-    """Construye el estado inicial para el grafo incluyendo historial."""
+def _build_state(user_id: str, username: str, text: str, imagen_path: str = None, es_voz: bool = False) -> dict:
+    from langchain_core.messages import AIMessage
     historial = cargar_historial(user_id, limite=20)
-    mensajes_previos = []
-    for msg in historial:
-        from langchain_core.messages import AIMessage
-        if msg["tipo"] == "inbound":
-            mensajes_previos.append(HumanMessage(content=msg["contenido"]))
-        else:
-            mensajes_previos.append(AIMessage(content=msg["contenido"]))
-
-    return {
-        "messages": mensajes_previos + [HumanMessage(content=text)],
-        "user_id": user_id,
-        "username": username,
-        **extra,
-    }
+    mensajes_previos = [
+        HumanMessage(content=m["contenido"]) if m["tipo"] == "inbound"
+        else AIMessage(content=m["contenido"])
+        for m in historial
+    ]
+    set_user_context(user_id, username, imagen_path=imagen_path, es_voz=es_voz)
+    return {"messages": mensajes_previos + [HumanMessage(content=text)]}
 
 
-async def _invocar_y_responder(update: Update, state: dict, user_id: str, texto_original: str):
-    """Invoca el grafo, persiste mensajes y responde al usuario."""
+async def _invocar_y_responder(update: Update, context: ContextTypes.DEFAULT_TYPE, state: dict, user_id: str, texto_original: str):
     try:
+        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         result = graph.invoke(state)
-        respuesta = result.get("final_response") or "❌ No pude procesar tu solicitud."
+        raw = result["messages"][-1].content
+        if isinstance(raw, list):
+            respuesta = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in raw)
+        else:
+            respuesta = raw
 
-        # Persistir inbound + outbound
         guardar_mensaje(user_id, "inbound", texto_original, update.message.message_id)
         guardar_mensaje(user_id, "outbound", respuesta)
 
@@ -101,7 +103,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"TEXT {username}({user_id}): {text}")
     state = _build_state(user_id, username, text)
-    await _invocar_y_responder(update, state, user_id, text)
+    await _invocar_y_responder(update, context, state, user_id, text)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,9 +114,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _rechazar(update); return
     username = _display_name(user)
 
-    await update.message.reply_text("🎙️ Transcribiendo tu audio...")
-
     try:
+        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         from services.whisper_service import transcribir
         voice = update.message.voice or update.message.audio
         tg_file = await context.bot.get_file(voice.file_id)
@@ -131,10 +132,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         logger.info(f"VOICE {username}({user_id}) → '{texto}'")
-        await update.message.reply_text(f"📝 Entendí: _{texto}_", parse_mode="Markdown")
-
         state = _build_state(user_id, username, texto, es_voz=True)
-        await _invocar_y_responder(update, state, user_id, texto)
+        await _invocar_y_responder(update, context, state, user_id, texto)
 
     except ImportError:
         await update.message.reply_text(
@@ -154,10 +153,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _rechazar(update); return
     username = _display_name(user)
 
-    await update.message.reply_text("🧾 Procesando ticket...")
-
     try:
-        # La foto más grande (mejor calidad)
+        await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         photo = update.message.photo[-1]
         tg_file = await context.bot.get_file(photo.file_id)
 
@@ -167,10 +164,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         caption = update.message.caption or "procesar ticket"
         state = _build_state(user_id, username, caption, imagen_path=img_path)
-        # Forzar la decisión al nodo de ticket
-        state["decision"] = "procesar_ticket"
 
-        await _invocar_y_responder(update, state, user_id, "[foto de ticket]")
+        await _invocar_y_responder(update, context, state, user_id, "[foto de ticket]")
         os.remove(img_path)
 
     except Exception as e:
