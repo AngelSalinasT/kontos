@@ -4,7 +4,7 @@ from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import create_react_agent
 from langchain_google_genai import ChatGoogleGenerativeAI
 from tools import ALL_TOOLS
-from context import get_continua_sesion
+from context import get_continua_sesion, get_imagen_path
 
 load_dotenv()
 
@@ -64,11 +64,22 @@ _CONTINUA = ("\n\nCONTEXTO: Ya vienes conversando con Angel (los mensajes anteri
 _NUEVA = ("\n\nCONTEXTO: Es el primer mensaje tras un rato sin hablar. Puedes saludar breve una vez "
           "y entrar directo a lo que necesita.")
 
+# Directiva sobre la imagen del turno actual: evita que el modelo llame a
+# `procesar_imagen` cuando el mensaje de este turno NO trae foto (p. ej. cuando
+# se refiere a una imagen de un turno anterior, que ya fue procesada).
+_CON_IMAGEN = ("\n\nIMAGEN: El mensaje actual de Angel INCLUYE una imagen. Procésala con "
+               "`procesar_imagen`.")
+_SIN_IMAGEN = ("\n\nIMAGEN: El mensaje actual de Angel NO incluye ninguna imagen. NO llames a "
+               "`procesar_imagen` bajo ninguna circunstancia. Si Angel menciona una foto, es una que "
+               "ya envió y procesaste antes: usa los datos que ya quedaron registrados (consúltalos "
+               "con las herramientas de gastos) o pídele que la reenvíe si hace falta.")
+
 
 def _prompt(state):
-    """Prepende el system prompt, ajustando el saludo según la continuidad de la sesión."""
-    extra = _CONTINUA if get_continua_sesion() else _NUEVA
-    return [SystemMessage(content=SYSTEM_PROMPT + extra)] + state["messages"]
+    """Prepende el system prompt con las directivas dinámicas del turno (sesión + imagen)."""
+    sesion = _CONTINUA if get_continua_sesion() else _NUEVA
+    imagen = _CON_IMAGEN if get_imagen_path() else _SIN_IMAGEN
+    return [SystemMessage(content=SYSTEM_PROMPT + sesion + imagen)] + state["messages"]
 
 
 llm = ChatGoogleGenerativeAI(
