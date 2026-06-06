@@ -1,7 +1,9 @@
 import os
+import base64
 import logging
 from datetime import datetime
 from typing import Optional
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from db import get_conn, upsert_usuario
 from context import get_user_id, get_username, get_imagen_path
@@ -10,7 +12,21 @@ from tools.despensa import _recalcular_patron
 logger = logging.getLogger(__name__)
 
 
+def _mime_de(imagen_path: str) -> str:
+    ext = os.path.splitext(imagen_path)[1].lower()
+    return {".png": "image/png", ".webp": "image/webp",
+            ".gif": "image/gif"}.get(ext, "image/jpeg")
+
+
+def _imagen_data_uri(imagen_path: str) -> str:
+    """Lee la imagen y la codifica como data URI para enviarla al modelo de visión."""
+    with open(imagen_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    return f"data:{_mime_de(imagen_path)};base64,{b64}"
+
+
 def _ocr_imagen(imagen_path: str) -> str:
+    """Fallback: extrae texto con OCR cuando la visión del modelo no está disponible."""
     try:
         import easyocr
         reader = easyocr.Reader(["es", "en"], gpu=False, verbose=False)
@@ -40,12 +56,6 @@ def procesar_imagen() -> str:
     if not imagen_path or not os.path.exists(imagen_path):
         return "❌ No se recibió ninguna imagen válida."
 
-    texto_ocr = _ocr_imagen(imagen_path)
-    logger.info("OCR imagen (%d chars): %s", len(texto_ocr), texto_ocr[:300].replace("\n", " | "))
-    if texto_ocr.startswith("ERROR_OCR"):
-        logger.error("Fallo OCR: %s", texto_ocr)
-        return f"❌ No pude leer la imagen. Intenta con una foto más nítida.\n{texto_ocr}"
-
     hoy = datetime.now().strftime("%Y-%m-%d")
     user_id = get_user_id()
     username = get_username()
@@ -64,18 +74,13 @@ def procesar_imagen() -> str:
         catalogo = conn.execute("SELECT id, nombre FROM productos WHERE user_id = ? AND activo = 1", (user_id,)).fetchall()
 
     nombres_catalogo = [r["nombre"] for r in catalogo]
-    prompt = f"""Eres un extractor de datos financieros. Analiza el texto OCR de una imagen que envió el usuario y clasifícala:
+    instrucciones = f"""Eres un extractor de datos financieros. Analiza la imagen que envió el usuario y clasifícala:
 - "ticket_compra": ticket/recibo de compra en una tienda (súper, farmacia…) con lista de productos.
 - "estado_cuenta": estado de cuenta o lista de varios movimientos/transacciones de tarjeta o banco.
 - "gasto_suelto": comprobante de UN solo pago/cargo (transferencia, recibo de servicio, una compra individual).
 - "desconocido": no se puede determinar o no es financiero.
 
 Catálogo de despensa del usuario (mapea productos SOLO si es ticket_compra): {nombres_catalogo}
-
-Texto OCR:
----
-{texto_ocr[:3500]}
----
 
 Responde SOLO con JSON válido, sin texto adicional:
 {{"tipo": "ticket_compra|estado_cuenta|gasto_suelto|desconocido",
@@ -85,14 +90,42 @@ Responde SOLO con JSON válido, sin texto adicional:
   "productos": [{{"nombre_catalogo": "nombre EXACTO del catálogo si coincide, si no null", "nombre_ticket": "como aparece", "precio": <número o null>, "cantidad": <número>}}],
   "movimientos": [{{"concepto": "descripción del cargo", "monto": <número positivo>, "fecha": "YYYY-MM-DD", "categoria": "Comida|Transporte|Entretenimiento|Servicios|Salud|Compras|General"}}]}}
 
-Reglas: 'productos' solo para ticket_compra. 'movimientos' solo para estado_cuenta o gasto_suelto, e incluye ÚNICAMENTE cargos/gastos (NO pagos a la tarjeta, abonos, depósitos ni intereses a favor)."""
+Reglas IMPORTANTES:
+- Es una captura de movimientos bancarios/tarjeta: casi todo son GASTOS del usuario. Extrae TODOS los renglones que sean un cargo/compra; NO te saltes ninguno.
+- "Pago con tarjeta", "compra con tarjeta", "cargo" = el usuario GASTÓ dinero → SÍ va en 'movimientos'.
+- Excluye ÚNICAMENTE entradas de dinero a favor del usuario: pagos/abonos A la tarjeta de crédito, depósitos, transferencias recibidas, reembolsos e intereses a favor.
+- 'productos' solo para ticket_compra; 'movimientos' solo para estado_cuenta o gasto_suelto.
+- Si un monto no se ve con claridad, déjalo igualmente como movimiento con tu mejor lectura; no lo descartes por dudar."""
 
-    resp = _llm.invoke(prompt)
-    raw = resp.content if hasattr(resp, "content") else str(resp)
-    data = parse_json_from_text(raw)
+    data, via = None, None
+    try:
+        msg = HumanMessage(content=[
+            {"type": "text", "text": instrucciones},
+            {"type": "image_url", "image_url": _imagen_data_uri(imagen_path)},
+        ])
+        resp = _llm.invoke([msg])
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        data = parse_json_from_text(raw)
+        via = "visión"
+    except Exception as e:
+        logger.warning("Visión falló (%s); intento OCR de respaldo.", e)
+
+    if not data:
+        # Fallback: OCR a texto y se lo pasamos al modelo como texto plano.
+        texto_ocr = _ocr_imagen(imagen_path)
+        logger.info("OCR imagen (%d chars): %s", len(texto_ocr), texto_ocr[:300].replace("\n", " | "))
+        if texto_ocr.startswith("ERROR_OCR"):
+            logger.error("Fallo OCR: %s", texto_ocr)
+            return "❌ No pude leer la imagen. Intenta con una foto más nítida."
+        resp = _llm.invoke(f"{instrucciones}\n\nTexto OCR de la imagen:\n---\n{texto_ocr[:3500]}\n---")
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        data = parse_json_from_text(raw)
+        via = "OCR"
+
     if not data:
         logger.warning("No se pudo parsear JSON de la imagen. Respuesta LLM: %s", str(raw)[:500])
         return "❌ No pude interpretar la imagen. Intenta con una foto más nítida."
+    logger.info("Imagen procesada vía %s.", via)
 
     tipo = (data.get("tipo") or "").lower()
     logger.info("Imagen clasificada como '%s' (tienda=%s total=%s productos=%d movimientos=%d)",

@@ -10,7 +10,7 @@ from telegram.error import BadRequest
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 from langchain_core.messages import HumanMessage
 from graph import graph
-from nodes.historial import guardar_mensaje, cargar_historial
+from nodes.historial import guardar_mensaje, cargar_historial, continua_sesion
 from context import set_user_context
 
 load_dotenv()
@@ -88,7 +88,10 @@ def _build_state(user_id: str, username: str, text: str, imagen_path: str = None
         else AIMessage(content=m["contenido"])
         for m in historial
     ]
-    set_user_context(user_id, username, imagen_path=imagen_path, es_voz=es_voz)
+    set_user_context(
+        user_id, username, imagen_path=imagen_path, es_voz=es_voz,
+        continua_sesion=continua_sesion(user_id),
+    )
     return {"messages": mensajes_previos + [HumanMessage(content=text)]}
 
 
