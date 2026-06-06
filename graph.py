@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import create_react_agent
@@ -59,8 +60,11 @@ Formato (es Telegram, no WhatsApp):
 
 # Directiva de apertura según si la conversación viene en curso o arranca de cero.
 _CONTINUA = ("\n\nCONTEXTO: Ya vienes conversando con Angel (los mensajes anteriores son de esta "
-             "misma plática). NO lo saludes de nuevo ni te presentes; responde directo, como quien "
-             "sigue la conversación donde la dejaron.")
+             "misma plática). IMPORTANTE: varias de tus respuestas anteriores en el historial "
+             "empiezan con saludos como '¡Qué onda!', '¡Órale!' o '¡Hola Angel!'. Ese era un estilo "
+             "viejo que YA NO debes usar: NO lo imites. NUNCA abras tu respuesta con un saludo ni "
+             "repitiendo el nombre de Angel; entra directo a lo que te pide, como quien sigue la "
+             "conversación donde la dejó. Tampoco uses modismos ('qué onda', 'órale', 'cuate').")
 _NUEVA = ("\n\nCONTEXTO: Es el primer mensaje tras un rato sin hablar. Puedes saludar breve una vez "
           "y entrar directo a lo que necesita.")
 
@@ -75,11 +79,32 @@ _SIN_IMAGEN = ("\n\nIMAGEN: El mensaje actual de Angel NO incluye ninguna imagen
                "con las herramientas de gastos) o pídele que la reenvíe si hace falta.")
 
 
+# Calendario de referencia. Nombres en español a mano para no depender del locale del host.
+_DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+_MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+          "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _calendario(dias: int = 15) -> str:
+    """Bloque con los últimos `dias` días (fecha + día de semana) para anclar al modelo
+    en el tiempo y que no se confunda de mes/día al interpretar 'ayer', 'el lunes', etc."""
+    hoy = datetime.now()
+    lineas = []
+    for i in range(dias):
+        d = hoy - timedelta(days=i)
+        etq = " (HOY)" if i == 0 else (" (ayer)" if i == 1 else "")
+        lineas.append(f"- {d.strftime('%Y-%m-%d')} {_DIAS[d.weekday()]}{etq}")
+    hoy_txt = f"{_DIAS[hoy.weekday()]} {hoy.day} de {_MESES[hoy.month - 1]} de {hoy.year}"
+    return ("\n\nCALENDARIO (referencia temporal; hoy es " + hoy_txt + "). Apóyate en estas fechas "
+            "para interpretar 'hoy', 'ayer', 'el lunes', el mes en curso, etc., y NO te confundas de "
+            "mes ni de día:\n" + "\n".join(lineas))
+
+
 def _prompt(state):
-    """Prepende el system prompt con las directivas dinámicas del turno (sesión + imagen)."""
+    """Prepende el system prompt con las directivas dinámicas del turno (sesión + imagen + calendario)."""
     sesion = _CONTINUA if get_continua_sesion() else _NUEVA
     imagen = _CON_IMAGEN if get_imagen_path() else _SIN_IMAGEN
-    return [SystemMessage(content=SYSTEM_PROMPT + sesion + imagen)] + state["messages"]
+    return [SystemMessage(content=SYSTEM_PROMPT + sesion + imagen + _calendario())] + state["messages"]
 
 
 llm = ChatGoogleGenerativeAI(
