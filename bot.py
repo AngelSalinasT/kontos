@@ -198,15 +198,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         tg_file = await context.bot.get_file(photo.file_id)
 
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            img_path = tmp.name
+        # Ruta estable por usuario (una foto pendiente a la vez): NO se borra al terminar,
+        # para poder re-procesarla en el siguiente turno si hay que pedir aclaración
+        # (¿ticket o captura bancaria?). La próxima foto del usuario la sobreescribe.
+        img_path = os.path.join(tempfile.gettempdir(), f"kontos_img_{user_id}.jpg")
         await tg_file.download_to_drive(img_path)
 
         caption = update.message.caption or "Te mando esta foto, regístrala donde corresponda."
         state = _build_state(user_id, username, caption, imagen_path=img_path)
 
         await _invocar_y_responder(update, context, state, user_id, "[foto de ticket]")
-        os.remove(img_path)
 
     except Exception as e:
         logger.error(f"Error procesando foto: {e}", exc_info=True)

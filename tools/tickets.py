@@ -6,7 +6,10 @@ from typing import Optional
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from db import get_conn, upsert_usuario
-from context import get_user_id, get_username, get_imagen_path
+from context import (
+    get_user_id, get_username, get_imagen_path,
+    get_ultima_imagen, set_imagen_pendiente,
+)
 from tools.despensa import _recalcular_patron
 
 logger = logging.getLogger(__name__)
@@ -41,20 +44,39 @@ def _ocr_imagen(imagen_path: str) -> str:
         return f"ERROR_OCR: {e}"
 
 
+# Mapeo de los valores amigables que usa el modelo a los tipos internos.
+_TIPO_FORZADO = {
+    "ticket": "ticket_compra", "ticket_compra": "ticket_compra",
+    "banco": "estado_cuenta", "estado_cuenta": "estado_cuenta",
+    "gasto": "gasto_suelto", "gasto_suelto": "gasto_suelto",
+}
+
+
 @tool
-def procesar_imagen() -> str:
+def procesar_imagen(tipo_forzado: Optional[str] = None) -> str:
     """Procesa una foto que envió el usuario (ticket de compra, estado de cuenta,
-    captura de movimientos de tarjeta/banco, o comprobante de un pago) con OCR.
-    Detecta automáticamente qué tipo de imagen es y la registra donde corresponde:
-    - Ticket de compra de súper → productos en la despensa + el total como gasto.
-    - Estado de cuenta / movimientos → cada cargo como gasto.
-    - Un solo pago/comprobante → un gasto.
-    Úsala SIEMPRE que el usuario mande una foto. No necesita argumentos; la imagen
-    ya está disponible en el contexto.
+    captura de movimientos de tarjeta/banco, o comprobante de un pago).
+
+    Dos destinos SEPARADOS, nunca se mezclan:
+    - Ticket de compra → SOLO la despensa (productos, precio unitario, frecuencia).
+      Un ticket NUNCA registra un gasto; el gasto sale de la captura bancaria o de la voz.
+    - Estado de cuenta / movimientos / pago suelto → cada cargo como gasto.
+
+    Úsala SIEMPRE que el usuario mande una foto. Normalmente sin argumentos: detecta el tipo
+    sola. Si no logra distinguir con seguridad si es un ticket o una captura bancaria, NO
+    registra nada y te pide que le preguntes al usuario qué es.
+
+    Args:
+        tipo_forzado: Úsalo SOLO después de haber preguntado y que el usuario aclare qué era
+            la última foto. Valores: 'ticket' (ticket de compra → despensa) o
+            'banco' (captura/estado de cuenta → gastos). Déjalo vacío en el primer intento.
     """
-    imagen_path = get_imagen_path()
+    forzado = _TIPO_FORZADO.get((tipo_forzado or "").lower().strip()) if tipo_forzado else None
+    # En el primer intento la foto viene en el turno; al re-procesar tras una aclaración,
+    # la foto ya no viene en el turno pero seguimos teniendo la última del usuario.
+    imagen_path = get_imagen_path() or (get_ultima_imagen() if forzado else None)
     if not imagen_path or not os.path.exists(imagen_path):
-        return "❌ No se recibió ninguna imagen válida."
+        return "❌ No se recibió ninguna imagen válida. Pídele a Angel que la reenvíe."
 
     hoy = datetime.now().strftime("%Y-%m-%d")
     user_id = get_user_id()
@@ -74,16 +96,22 @@ def procesar_imagen() -> str:
         catalogo = conn.execute("SELECT id, nombre FROM productos WHERE user_id = ? AND activo = 1", (user_id,)).fetchall()
 
     nombres_catalogo = [r["nombre"] for r in catalogo]
+    hint_forzado = ""
+    if forzado == "ticket_compra":
+        hint_forzado = '\nEl usuario YA CONFIRMÓ que esto es un TICKET DE COMPRA: clasifícalo como "ticket_compra" y extrae sus productos.'
+    elif forzado in ("estado_cuenta", "gasto_suelto"):
+        hint_forzado = '\nEl usuario YA CONFIRMÓ que esto es una CAPTURA BANCARIA: clasifícalo como "estado_cuenta" y extrae sus movimientos.'
     instrucciones = f"""Eres un extractor de datos financieros. Analiza la imagen que envió el usuario y clasifícala:
-- "ticket_compra": ticket/recibo de compra en una tienda (súper, farmacia…) con lista de productos.
-- "estado_cuenta": estado de cuenta o lista de varios movimientos/transacciones de tarjeta o banco.
+- "ticket_compra": ticket/recibo de una TIENDA física (súper, farmacia, Costco…). Señales: nombre y dirección de la tienda, lista de PRODUCTOS con precio unitario, cantidades, subtotal/IVA/total, número de caja o folio.
+- "estado_cuenta": captura de la app del banco o estado de cuenta con VARIOS movimientos/transacciones. Señales: renglones con fecha + concepto + monto, saldos, nombres de comercios (no productos), "pago con tarjeta", "compra", referencias.
 - "gasto_suelto": comprobante de UN solo pago/cargo (transferencia, recibo de servicio, una compra individual).
-- "desconocido": no se puede determinar o no es financiero.
+- "desconocido": no se puede determinar o no es financiero.{hint_forzado}
 
 Catálogo de despensa del usuario (mapea productos SOLO si es ticket_compra): {nombres_catalogo}
 
 Responde SOLO con JSON válido, sin texto adicional:
 {{"tipo": "ticket_compra|estado_cuenta|gasto_suelto|desconocido",
+  "confianza": "alta|baja (usa 'baja' si dudas entre ticket_compra y estado_cuenta)",
   "tienda": "nombre de la tienda o null",
   "fecha": "YYYY-MM-DD (usa {hoy} si no aparece)",
   "total": <número o null: total del ticket_compra>,
@@ -127,11 +155,24 @@ Reglas IMPORTANTES:
         return "❌ No pude interpretar la imagen. Intenta con una foto más nítida."
     logger.info("Imagen procesada vía %s.", via)
 
-    tipo = (data.get("tipo") or "").lower()
-    logger.info("Imagen clasificada como '%s' (tienda=%s total=%s productos=%d movimientos=%d)",
-                tipo, data.get("tienda"), data.get("total"),
+    tipo = forzado or (data.get("tipo") or "").lower()
+    confianza = (data.get("confianza") or "alta").lower()
+    logger.info("Imagen clasificada como '%s' (forzado=%s confianza=%s tienda=%s total=%s productos=%d movimientos=%d)",
+                tipo, bool(forzado), confianza, data.get("tienda"), data.get("total"),
                 len(data.get("productos") or []), len(data.get("movimientos") or []))
 
+    # Confirmar SOLO cuando hay duda: si no venimos de una aclaración (sin tipo_forzado) y la
+    # clasificación es ambigua, NO registramos nada y pedimos que el usuario aclare. La foto
+    # queda pendiente para re-procesarla con tipo_forzado en cuanto Angel responda.
+    if not forzado and (tipo == "desconocido" or confianza == "baja"):
+        set_imagen_pendiente(True)
+        pista = f" Parece de {data.get('tienda')}." if data.get("tienda") else ""
+        return ("AMBIGUO: no estoy seguro de si la foto es un ticket de compra (va a la despensa) "
+                "o una captura de movimientos del banco (va a gastos)." + pista +
+                " Pregúntale a Angel qué es: si dice que es un ticket, vuelve a llamar "
+                "procesar_imagen con tipo_forzado='ticket'; si es del banco, con tipo_forzado='banco'.")
+
+    set_imagen_pendiente(False)
     if tipo == "ticket_compra":
         return _registrar_ticket(user_id, username, data, catalogo, imagen_path, hoy)
     if tipo in ("estado_cuenta", "gasto_suelto"):
@@ -141,8 +182,11 @@ Reglas IMPORTANTES:
 
 
 def _registrar_ticket(user_id, username, data, catalogo, imagen_path, hoy) -> str:
-    """Ticket de súper: registra productos en la despensa y el total como gasto."""
-    from db import get_or_create_categoria
+    """Ticket de súper: registra SOLO los productos en la despensa.
+
+    El ticket NO crea un gasto: el dinero se registra desde la captura bancaria o la voz,
+    así una misma compra (captura + ticket) no se cuenta dos veces.
+    """
     fecha = data.get("fecha") or hoy
     tienda = data.get("tienda")
     total = data.get("total")
@@ -167,22 +211,9 @@ def _registrar_ticket(user_id, username, data, catalogo, imagen_path, hoy) -> st
             _recalcular_patron(conn, producto_id)
             registradas.append(nombre_cat)
 
-        # El ticket también es un gasto: registra el total en movimientos.
-        gasto_registrado = False
-        if total:
-            cat_id = get_or_create_categoria(conn, "Despensa", "gasto")
-            conn.execute(
-                "INSERT INTO movimientos (user_id, username, fecha, concepto, monto, categoria_id, origen) VALUES (?,?,?,?,?,?,'ocr')",
-                (user_id, username, fecha, f"Compra {tienda or 'súper'}", total, cat_id),
-            )
-            gasto_registrado = True
-
     respuesta = f"🧾 Ticket — {tienda or 'tienda desconocida'}\n"
     if total:
-        respuesta += f"Total: ${total:.2f}"
-        if gasto_registrado:
-            respuesta += " (registrado como gasto 💸)"
-        respuesta += "\n"
+        respuesta += f"Total: ${total:.2f} (no lo cuento como gasto; ese sale de tu movimiento bancario)\n"
     if registradas:
         respuesta += f"\n✅ Despensa ({len(registradas)}):\n" + "\n".join(f"• {n}" for n in registradas)
     if ignoradas:

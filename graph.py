@@ -5,7 +5,7 @@ from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import create_react_agent
 from langchain_google_genai import ChatGoogleGenerativeAI
 from tools import ALL_TOOLS
-from context import get_continua_sesion, get_imagen_path
+from context import get_continua_sesion, get_imagen_path, get_imagen_pendiente
 
 load_dotenv()
 
@@ -18,12 +18,19 @@ Tono: español neutro, tranquilo y claro. Trata a Angel de "tú", sin modismos n
 (nada de "órale", "qué onda", "cuate", "ándale", etc.) y sin exceso de entusiasmo ni signos de
 exclamación de más. Sé amable y directo, como un asistente sereno y profesional, nunca efusivo.
 
+DOS LIBROS SEPARADOS (no los mezcles nunca):
+- GASTOS (su dinero): se alimentan SOLO de capturas bancarias/de tarjeta o de la voz/texto
+  ("gasté 200 en gasolina"). Es la verdad de cuánto salió.
+- DESPENSA (sus productos): se alimenta SOLO de los TICKETS de compra (productos, precio
+  unitario y frecuencia). Un ticket NUNCA cuenta como gasto: si registraras el total del
+  ticket como gasto, lo duplicarías con su captura bancaria de esa misma compra.
+
 Lo que recibes de Angel y qué hacer con ello:
-- Texto o voz describiendo un gasto ("me cobraron la luz", "200 de gasolina") → regístralo.
+- Texto o voz describiendo un gasto ("me cobraron la luz", "200 de gasolina") → regístralo como GASTO.
 - Una captura/foto de sus movimientos del banco o tarjeta → es lo más común. Casi siempre
   son GASTOS. Usa `procesar_imagen` y registra cada cargo. No omitas ninguno.
-- Un ticket de compra (súper, Costco, farmacia) → además del gasto total, sirve para llevar
-  su despensa y aprender su patrón de compra para luego predecir cuándo reabastecer.
+- Un ticket de compra (súper, Costco, farmacia) → SOLO va a la despensa: sirve para aprender su
+  patrón de compra y predecir cuándo reabastecer. NO lo registres como gasto.
 - Preguntas sobre cómo va ("¿cuánto llevo este mes?", "¿cómo voy con el presupuesto?") →
   consulta totales/presupuestos y resúmeselo claro.
 
@@ -31,10 +38,11 @@ Cómo razonas antes de actuar:
 - Entiende la intención real, no solo las palabras. Si hay ambigüedad genuina, pregunta breve.
 - Decide la herramienta correcta y úsala. Si una acción requiere otra previa (p. ej. registrar
   una compra de un producto que no existe en el catálogo), encadénalas tú mismo.
-- Con fotos usa SIEMPRE `procesar_imagen`: ella detecta si es ticket, estado de cuenta o un pago
-  suelto. Si la herramienta no logra identificar qué es, o detecta un ticket de compra con
-  productos que no reconoce, pregúntale a Angel para aclarar antes de dar nada por hecho
-  ("¿Esto es un ticket de compra? ¿Quieres que lo registre en tu despensa?").
+- Con fotos usa SIEMPRE `procesar_imagen`: ella detecta sola si es ticket, estado de cuenta o un
+  pago suelto y lo registra donde toca. Si te responde que es AMBIGUO (no distingue ticket de
+  captura bancaria), NO insistas: pregúntale a Angel en una línea "¿esto es un ticket de compra o
+  una captura de tu banco?". Cuando responda, vuelve a llamar `procesar_imagen` con
+  `tipo_forzado='ticket'` o `tipo_forzado='banco'` según lo que diga (la foto sigue disponible).
 - Después de usar una herramienta, lee su resultado y resúmelo con naturalidad; no repitas el JSON.
 - Si una herramienta falla o no encuentra algo, dilo claro y ofrece el siguiente paso.
 
@@ -77,6 +85,13 @@ _SIN_IMAGEN = ("\n\nIMAGEN: El mensaje actual de Angel NO incluye ninguna imagen
                "`procesar_imagen` bajo ninguna circunstancia. Si Angel menciona una foto, es una que "
                "ya envió y procesaste antes: usa los datos que ya quedaron registrados (consúltalos "
                "con las herramientas de gastos) o pídele que la reenvíe si hace falta.")
+# Caso especial: hay una foto que quedó pendiente porque era ambigua y le preguntaste a Angel
+# qué era. Su mensaje de este turno es la aclaración → re-procesa esa foto con tipo_forzado.
+_PENDIENTE = ("\n\nIMAGEN: La última foto de Angel quedó SIN registrar porque no se pudo distinguir "
+              "si era un ticket o una captura bancaria, y le preguntaste. Si este mensaje aclara qué "
+              "era, llama `procesar_imagen` con `tipo_forzado='ticket'` (si dijo que es ticket de "
+              "compra) o `tipo_forzado='banco'` (si es del banco). Si su mensaje NO se refiere a esa "
+              "foto, atiéndelo normal y NO llames a `procesar_imagen`.")
 
 
 # Calendario de referencia. Nombres en español a mano para no depender del locale del host.
@@ -103,7 +118,12 @@ def _calendario(dias: int = 15) -> str:
 def _prompt(state):
     """Prepende el system prompt con las directivas dinámicas del turno (sesión + imagen + calendario)."""
     sesion = _CONTINUA if get_continua_sesion() else _NUEVA
-    imagen = _CON_IMAGEN if get_imagen_path() else _SIN_IMAGEN
+    if get_imagen_path():
+        imagen = _CON_IMAGEN
+    elif get_imagen_pendiente():
+        imagen = _PENDIENTE
+    else:
+        imagen = _SIN_IMAGEN
     return [SystemMessage(content=SYSTEM_PROMPT + sesion + imagen + _calendario())] + state["messages"]
 
 
