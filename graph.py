@@ -60,6 +60,19 @@ Estilo de respuesta:
 - Para gastos, infiere la categoría según el concepto cuando Angel no la mencione.
 - Si no se especifica fecha, usa la de hoy.
 
+REGLA ABSOLUTA — responde SOLO el mensaje actual y NUNCA inventes registros:
+- Responde ÚNICAMENTE al ÚLTIMO mensaje de Angel. Todos los mensajes anteriores del historial
+  (incluidas fotos y preguntas) YA fueron atendidos: son contexto, no tareas pendientes. No los
+  vuelvas a responder ni reproceses imágenes que ya procesaste en turnos pasados.
+- NUNCA afirmes haber registrado, procesado o guardado algo a menos que una herramienta que
+  EJECUTASTE EN ESTE MISMO TURNO te haya devuelto ese resultado. Si en este turno no llamaste a
+  ninguna herramienta de registro, NO anuncies ningún registro nuevo: sería una invención.
+- Cuando muestres gastos, reporta EXACTAMENTE lo que devolvió `listar_gastos` o `consultar_total`:
+  no agregues filas, montos ni IDs que la herramienta no haya devuelto. Si el dato no vino de una
+  herramienta de ESTE turno, no lo escribas.
+- Si Angel solo pregunta o comenta (sin pedir registrar nada), limítate a consultar y responder;
+  no registres nada.
+
 Formato (es Telegram, no WhatsApp):
 - Para resaltar usa **negrita** (doble asterisco) y, para listas, viñetas con "• " al inicio de cada línea.
 - Cursiva con *un asterisco* o `código` para montos/nombres si ayuda. Nada de tablas, encabezados (#) ni HTML.
@@ -82,9 +95,12 @@ _NUEVA = ("\n\nCONTEXTO: Es el primer mensaje tras un rato sin hablar. Puedes sa
 _CON_IMAGEN = ("\n\nIMAGEN: El mensaje actual de Angel INCLUYE una imagen. Procésala con "
                "`procesar_imagen`.")
 _SIN_IMAGEN = ("\n\nIMAGEN: El mensaje actual de Angel NO incluye ninguna imagen. NO llames a "
-               "`procesar_imagen` bajo ninguna circunstancia. Si Angel menciona una foto, es una que "
-               "ya envió y procesaste antes: usa los datos que ya quedaron registrados (consúltalos "
-               "con las herramientas de gastos) o pídele que la reenvíe si hace falta.")
+               "`procesar_imagen` bajo ninguna circunstancia. NO empieces tu respuesta con frases como "
+               "'He procesado la imagen' ni anuncies ningún gasto 'recién registrado': en este turno NO "
+               "llegó ninguna foto, así que no se registró nada nuevo. Los '[foto de ticket]' que veas en "
+               "el historial son turnos PASADOS ya atendidos; ignóralos como tarea. Si Angel menciona una "
+               "foto, es una que ya envió y procesaste antes: consulta los datos ya guardados con "
+               "`listar_gastos`/`consultar_total` y reporta SOLO lo que esas herramientas devuelvan.")
 # Caso especial: hay una foto que quedó pendiente porque era ambigua y le preguntaste a Angel
 # qué era. Su mensaje de este turno es la aclaración → re-procesa esa foto con tipo_forzado.
 _PENDIENTE = ("\n\nIMAGEN: La última foto de Angel quedó SIN registrar porque no se pudo distinguir "
@@ -130,7 +146,7 @@ def _prompt(state):
 llm = ChatGoogleGenerativeAI(
     model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
     google_api_key=os.getenv("GEMINI_API_KEY"),
-    temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.4")),
+    temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.2")),
 )
 
 graph = create_react_agent(
