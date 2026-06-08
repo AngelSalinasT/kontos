@@ -9,6 +9,39 @@ def _hoy() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _tabla_gastos(rows, total: float) -> str:
+    """Tabla monoespaciada (4 columnas) envuelta en ``` para que Telegram la
+    pinte como <pre> con columnas alineadas. El concepto se recorta a CONC_W."""
+    ID_W, FECHA_W, CONC_W, MONTO_W = 3, 5, 14, 10
+
+    def fila(idv, fecha, concepto, monto) -> str:
+        return (f"{str(idv):>{ID_W}} {fecha:<{FECHA_W}} "
+                f"{concepto[:CONC_W]:<{CONC_W}} {monto:>{MONTO_W}}")
+
+    header = fila("ID", "Fecha", "Concepto", "Monto")
+    sep = "─" * len(header)
+    cuerpo = "\n".join(
+        fila(r["id"], r["fecha"][5:], r["concepto"] or "", f"{r['monto']:,.2f}") for r in rows
+    )
+    label_w = ID_W + 1 + FECHA_W + 1 + CONC_W
+    total_line = f"{'Total':>{label_w}} {total:>{MONTO_W},.2f}"
+    return f"```\n{header}\n{sep}\n{cuerpo}\n{sep}\n{total_line}\n```"
+
+
+def _tabla_categorias(rows, total: float) -> str:
+    """Tabla monoespaciada (categoría · monto) envuelta en ``` para Telegram."""
+    CAT_W, MONTO_W = 16, 11
+
+    def fila(cat, monto) -> str:
+        return f"{cat[:CAT_W]:<{CAT_W}} {monto:>{MONTO_W}}"
+
+    header = fila("Categoría", "Monto")
+    sep = "─" * len(header)
+    cuerpo = "\n".join(fila(r["nombre"] or "General", f"{r['total']:,.2f}") for r in rows)
+    total_line = fila("Total", f"{total:,.2f}")
+    return f"```\n{header}\n{sep}\n{cuerpo}\n{sep}\n{total_line}\n```"
+
+
 @tool
 def registrar_gasto(
     concepto: str,
@@ -84,8 +117,8 @@ def listar_gastos(
         return f"ℹ️ No hay gastos registrados para {mes:02d}/{anio}."
 
     total = sum(r["monto"] for r in rows)
-    lines = [f"ID:{r['id']} {r['fecha']} | {r['concepto']} | ${r['monto']:.2f} | {r['nombre'] or 'General'}" for r in rows]
-    return f"📋 Gastos {mes:02d}/{anio} ({len(rows)}):\n" + "\n".join(lines) + f"\n\nTotal: ${total:.2f}"
+    # La tabla viene en un bloque ``` ya alineado: el modelo debe copiarla tal cual.
+    return f"Gastos {mes:02d}/{anio} ({len(rows)}):\n" + _tabla_gastos(rows, total)
 
 
 @tool
@@ -179,10 +212,9 @@ def consultar_total(
     if not rows:
         return f"ℹ️ No hay gastos del {desde} al {hasta}."
 
-    lines = [f"  {r['nombre'] or 'General'}: ${r['total']:,.2f}" for r in rows]
-    respuesta = f"📊 Gastos {desde} → {hasta}:\n" + "\n".join(lines)
-    respuesta += f"\n\n💵 Total: ${total_general:,.2f}"
+    # La tabla viene en un bloque ``` ya alineado: el modelo debe copiarla tal cual.
+    respuesta = f"Gastos {desde} → {hasta}:\n" + _tabla_categorias(rows, total_general)
     if ingresos:
         balance = ingresos - total_general
-        respuesta += f"\n💰 Ingresos fijos: ${ingresos:,.2f}\n📈 Balance: ${balance:,.2f}"
+        respuesta += f"\nIngresos fijos: ${ingresos:,.2f} · Balance: ${balance:,.2f}"
     return respuesta

@@ -60,15 +60,37 @@ _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 
 
 def _telegram_html(text: str) -> str:
-    """Convierte el markdown ligero del LLM al HTML que renderiza Telegram."""
-    text = _HEADING.sub("", text)                  # quita encabezados markdown
+    """Convierte el markdown ligero del LLM al HTML que renderiza Telegram.
+
+    Los bloques de código (``` y `código`) se extraen ANTES de aplicar negrita/
+    cursiva: si no, un concepto con asterisco dentro de una tabla (p. ej.
+    'Stripe *amazon', 'Pay pal*comisione') se interpretaría como cursiva y
+    rompería la alineación. Se guardan con un centinela (bytes nulos, que no
+    aparecen en texto de usuario) y se reinsertan al final."""
+    stash: list[str] = []
+    def _guardar(html: str) -> str:
+        stash.append(html)
+        return f"\x00{len(stash) - 1}\x00"
+
+    # 1) Extraer bloques de código del texto CRUDO, ANTES que nada: así el regex de
+    #    encabezados (#) no se come una '# ' que sea contenido de la tabla, y la
+    #    negrita/cursiva tampoco tocan asteriscos de adentro (p. ej. 'Stripe *amazon').
+    text = _CODEBLOCK.sub(
+        lambda m: _guardar(f"<pre>{_html.escape(m.group(1).strip(chr(10)), quote=False)}</pre>"), text)
+    text = _INLINECODE.sub(
+        lambda m: _guardar(f"<code>{_html.escape(m.group(1), quote=False)}</code>"), text)
+
+    # 2) Ya sin bloques: quitar encabezados markdown, escapar y emfatizar.
+    text = _HEADING.sub("", text)
     text = _html.escape(text, quote=False)         # protege & < >
-    text = _CODEBLOCK.sub(lambda m: f"<pre>{m.group(1).strip()}</pre>", text)
     text = _BOLD.sub(r"<b>\1</b>", text)
     text = _BOLD_ALT.sub(r"<b>\1</b>", text)
-    text = _INLINECODE.sub(r"<code>\1</code>", text)
     text = _ITALIC.sub(r"<i>\1</i>", text)
     text = _ITALIC_ALT.sub(r"<i>\1</i>", text)
+
+    # 3) Reinsertar los bloques ya formateados.
+    for i, html in enumerate(stash):
+        text = text.replace(f"\x00{i}\x00", html)
     return text
 
 
