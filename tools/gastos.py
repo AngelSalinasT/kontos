@@ -1,8 +1,29 @@
+import re
 from datetime import datetime
 from typing import Optional
 from langchain_core.tools import tool
 from db import get_conn, upsert_usuario, get_or_create_categoria
 from context import get_user_id, get_username
+
+CATEGORIA_MSI = "Mensualidades"
+
+# Detección de cargos a meses sin intereses (MSI).
+_MSI_PLAZO_RE = re.compile(r"\b(\d{1,2})\s*de\s*(\d{1,2})\b")
+_MSI_KW_RE = re.compile(r"(\bMSI\b|meses?\s+sin\s+inter\w*|mensualidad\w*)", re.IGNORECASE)
+
+
+def _es_msi(concepto: str) -> bool:
+    """True si el concepto parece un cargo a MSI: contiene 'MSI', 'meses sin
+    intereses', 'mensualidad', o un plazo tipo 'X de N' (p.ej. '11 de 12')."""
+    if not concepto:
+        return False
+    if _MSI_KW_RE.search(concepto):
+        return True
+    m = _MSI_PLAZO_RE.search(concepto)
+    if m:
+        n, total = int(m.group(1)), int(m.group(2))
+        return 1 <= n <= total <= 48
+    return False
 
 
 def _hoy() -> str:
@@ -61,6 +82,10 @@ def registrar_gasto(
         fecha: Fecha en YYYY-MM-DD; omitir si no se menciona
     """
     fecha = fecha or _hoy()
+    # Detección automática de MSI: si no se forzó otra categoría y el concepto
+    # parece una mensualidad, se etiqueta como Mensualidades (separa del gasto variable).
+    if categoria == "General" and _es_msi(concepto):
+        categoria = CATEGORIA_MSI
     user_id = get_user_id()
     username = get_username()
 
@@ -208,6 +233,13 @@ def consultar_total(
         ingresos = conn.execute(
             "SELECT COALESCE(SUM(monto), 0) FROM ingresos_fijos WHERE user_id = ?", (user_id,)
         ).fetchone()[0]
+        # Gastos fijos: se restan al balance. Se excluyen los MSI porque esos ya
+        # entran como movimientos (categoría Mensualidades) y se contarían doble.
+        fijos = conn.execute(
+            "SELECT COALESCE(SUM(monto), 0) FROM gastos_fijos "
+            "WHERE user_id = ? AND concepto NOT LIKE '%MSI%'",
+            (user_id,),
+        ).fetchone()[0]
 
     if not rows:
         return f"ℹ️ No hay gastos del {desde} al {hasta}."
@@ -215,6 +247,9 @@ def consultar_total(
     # La tabla viene en un bloque ``` ya alineado: el modelo debe copiarla tal cual.
     respuesta = f"Gastos {desde} → {hasta}:\n" + _tabla_categorias(rows, total_general)
     if ingresos:
-        balance = ingresos - total_general
-        respuesta += f"\nIngresos fijos: ${ingresos:,.2f} · Balance: ${balance:,.2f}"
+        balance = ingresos - total_general - fijos
+        respuesta += (
+            f"\nIngresos: ${ingresos:,.2f} · Gastos fijos: -${fijos:,.2f}"
+            f" · Balance: ${balance:,.2f}"
+        )
     return respuesta
