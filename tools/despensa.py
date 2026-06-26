@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from langchain_core.tools import tool
 from db import get_conn, upsert_usuario, get_or_create_categoria
-from context import get_user_id, get_username, get_imagen_path
+from context import get_user_id, get_username
 
 
 def _hoy() -> str:

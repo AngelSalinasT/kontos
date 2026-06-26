@@ -19,7 +19,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 from graph import graph
 from langchain_core.messages import HumanMessage, AIMessage
-from nodes.historial import guardar_mensaje, cargar_historial
+from persistence.historial import guardar_mensaje, cargar_historial
 from db import init_db, get_conn
 
 USER_ID = "crud_tester"

@@ -1,13 +1,13 @@
 """
 Interfaz CLI para probar Kontos sin Telegram.
-Simula exactamente el flujo del bot: texto, fotos y audio.
+Simula el flujo del bot: texto, fotos y audio (las tres ramas del grafo).
 
 Uso:
   python3 chat.py                    # sesión interactiva
   python3 chat.py "ver despensa"     # un solo mensaje y salir
 
 Comandos especiales dentro de la sesión:
-  /foto <ruta>      Simula enviar una foto de ticket
+  /foto <ruta>      Simula enviar una foto (captura o ticket)
   /voz <ruta>       Simula enviar una nota de voz
   /seed             Carga los productos de Costco (seed.py)
   /reset            Limpia el historial de esta sesión
@@ -23,51 +23,35 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 from graph import graph
 from langchain_core.messages import HumanMessage, AIMessage
-from nodes.historial import guardar_mensaje, cargar_historial
+from persistence.historial import guardar_mensaje, cargar_historial, continua_sesion
+from context import set_user_context
 from db import init_db
 
 USER_ID   = os.getenv("SEED_USER_ID", "cli_user")
-USERNAME  = "Claude"
+USERNAME  = "Angel"
 
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-CYAN   = "\033[96m"
-GREEN  = "\033[92m"
-YELLOW = "\033[93m"
-RED    = "\033[91m"
-DIM    = "\033[2m"
+RESET, BOLD, CYAN, GREEN, YELLOW, RED, DIM = (
+    "\033[0m", "\033[1m", "\033[96m", "\033[92m", "\033[93m", "\033[91m", "\033[2m")
 
 
-def _cargar_historial_como_mensajes():
-    hist = cargar_historial(USER_ID, limite=20)
-    msgs = []
-    for m in hist:
-        if m["tipo"] == "inbound":
-            msgs.append(HumanMessage(content=m["contenido"]))
-        else:
-            msgs.append(AIMessage(content=m["contenido"]))
-    return msgs
+def _historial_previo():
+    return [
+        HumanMessage(content=m["contenido"]) if m["tipo"] == "inbound"
+        else AIMessage(content=m["contenido"])
+        for m in cargar_historial(USER_ID, limite=20)
+    ]
 
 
-def _build_state(texto: str, decision=None, imagen_path=None, es_voz=False):
-    previos = _cargar_historial_como_mensajes()
-    return {
-        "messages":    previos + [HumanMessage(content=texto)],
-        "user_id":     USER_ID,
-        "username":    USERNAME,
-        "decision":    decision,
-        "parsed_data": None,
-        "final_response": None,
-        "imagen_path": imagen_path,
-        "es_voz":      es_voz,
-    }
-
-
-def _invocar(texto: str, decision=None, imagen_path=None, es_voz=False) -> str:
-    state = _build_state(texto, decision=decision, imagen_path=imagen_path, es_voz=es_voz)
+def _invocar(extra: dict) -> str:
+    """Corre el grafo con los insumos del turno (igual que bot._procesar, sin Telegram)."""
+    set_user_context(USER_ID, USERNAME, continua_sesion=continua_sesion(USER_ID))
+    state = {"messages": _historial_previo(), **extra}
     result = graph.invoke(state)
-    respuesta = result.get("final_response") or "❌ Sin respuesta."
-    guardar_mensaje(USER_ID, "inbound",  texto)
+    raw = result["messages"][-1].content
+    respuesta = ("".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in raw)
+                 if isinstance(raw, list) else raw)
+    inbound = result.get("texto_original") or extra.get("texto") or "[mensaje]"
+    guardar_mensaje(USER_ID, "inbound", inbound)
     guardar_mensaje(USER_ID, "outbound", respuesta)
     return respuesta
 
@@ -90,8 +74,8 @@ def _handle_foto(args: str) -> str:
         return f"{RED}Uso: /foto <ruta_al_archivo>{RESET}"
     if not os.path.exists(ruta):
         return f"{RED}No encontré el archivo: {ruta}{RESET}"
-    print(f"{YELLOW}  🧾 Procesando ticket: {ruta}{RESET}")
-    return _invocar("[foto de ticket]", decision="procesar_ticket", imagen_path=ruta)
+    print(f"{YELLOW}  🖼️  Procesando imagen: {ruta}{RESET}")
+    return _invocar({"tipo": "foto", "imagen_path": ruta, "caption": ""})
 
 
 def _handle_voz(args: str) -> str:
@@ -101,15 +85,7 @@ def _handle_voz(args: str) -> str:
     if not os.path.exists(ruta):
         return f"{RED}No encontré el archivo: {ruta}{RESET}"
     print(f"{YELLOW}  🎙️  Transcribiendo: {ruta}{RESET}")
-    try:
-        from services.whisper_service import transcribir
-        texto = transcribir(ruta)
-        if not texto:
-            return "❌ No pude transcribir el audio."
-        print(f"{DIM}  → Transcripción: \"{texto}\"{RESET}")
-        return _invocar(texto, es_voz=True)
-    except ImportError:
-        return "⚠️  faster-whisper no instalado. Instala con: pip install faster-whisper pydub"
+    return _invocar({"tipo": "voz", "audio_path": ruta})
 
 
 def _handle_seed():
@@ -120,7 +96,6 @@ def _handle_seed():
 
 
 def run_once(mensaje: str):
-    """Modo no interactivo: un mensaje y salir. Soporta /foto y /voz."""
     init_db()
     low = mensaje.lower()
     if low.startswith("/foto"):
@@ -130,72 +105,42 @@ def run_once(mensaje: str):
     elif low == "/seed":
         print(_handle_seed())
     else:
-        print(_invocar(mensaje))
+        print(_invocar({"tipo": "texto", "texto": mensaje}))
 
 
 def run_interactive():
-    """Modo interactivo — simula Telegram."""
     init_db()
-
     print(f"\n{CYAN}{BOLD}{'─'*55}")
     print("  Kontos CLI  —  simulador de Telegram")
     print(f"{'─'*55}{RESET}")
     print(f"{DIM}  USER_ID: {USER_ID}  |  /salir para salir{RESET}\n")
-
-    # Saludo inicial igual al bot real
     _print_bot(
-        f"👋 Hola {USERNAME}! Soy Kontos, tu asistente de finanzas y despensa.\n\n"
-        "Escribe cualquier mensaje. Comandos especiales:\n"
-        "  /foto <ruta>  — simula foto de ticket\n"
-        "  /voz  <ruta>  — simula nota de voz\n"
-        "  /seed         — carga productos de Costco\n"
-        "  /reset        — borra historial de sesión\n"
-        "  /salir        — salir"
-    )
+        f"Hola {USERNAME}. Soy Kontos. Comandos: /foto <ruta>, /voz <ruta>, "
+        "/seed, /reset, /salir")
 
     while True:
         try:
             entrada = input(f"{GREEN}{BOLD}Tú: {RESET}").strip()
         except (EOFError, KeyboardInterrupt):
-            print(f"\n{DIM}  Adiós.{RESET}\n")
-            break
-
+            print(f"\n{DIM}  Adiós.{RESET}\n"); break
         if not entrada:
             continue
-
         low = entrada.lower()
-
         if low in ("/salir", "/exit", "/quit", "salir", "exit"):
-            print(f"\n{DIM}  Adiós.{RESET}\n")
-            break
-
+            print(f"\n{DIM}  Adiós.{RESET}\n"); break
         elif low == "/reset":
-            print(f"{YELLOW}  Historial de sesión borrado (la BD se mantiene).{RESET}")
-            continue
-
+            print(f"{YELLOW}  Historial de sesión: la BD se mantiene.{RESET}"); continue
         elif low == "/seed":
-            _print_user("/seed")
-            _print_bot(_handle_seed())
-            continue
-
+            _print_user("/seed"); _print_bot(_handle_seed()); continue
         elif low.startswith("/foto"):
-            _print_user(entrada)
-            _print_bot(_handle_foto(entrada[5:]))
-            continue
-
+            _print_user(entrada); _print_bot(_handle_foto(entrada[5:])); continue
         elif low.startswith("/voz"):
-            _print_user(entrada)
-            _print_bot(_handle_voz(entrada[4:]))
-            continue
-
+            _print_user(entrada); _print_bot(_handle_voz(entrada[4:])); continue
         elif low.startswith("/"):
-            print(f"{RED}  Comando desconocido. Usa /foto, /voz, /seed, /reset, /salir{RESET}")
-            continue
-
+            print(f"{RED}  Comando desconocido. Usa /foto, /voz, /seed, /reset, /salir{RESET}"); continue
         _print_user(entrada)
         try:
-            respuesta = _invocar(entrada)
-            _print_bot(respuesta)
+            _print_bot(_invocar({"tipo": "texto", "texto": entrada}))
         except Exception as e:
             _print_bot(f"❌ Error interno: {e}")
 
