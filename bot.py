@@ -1,6 +1,7 @@
 import os
 import re
 import html as _html
+import asyncio
 import logging
 import tempfile
 from dotenv import load_dotenv
@@ -91,6 +92,31 @@ async def _responder(message, texto: str):
         await message.reply_text(texto)
 
 
+# El agente separa sus mensajes con una línea de solo `///` (ver prompt). Lo partimos
+# para enviarlo en tandas, como un humano. Tope de tandas para no spamear.
+_SEP = re.compile(r"\n?\s*///\s*\n?")
+_MAX_TANDAS = 3
+
+
+def _en_tandas(texto: str) -> list[str]:
+    partes = [p.strip() for p in _SEP.split(texto) if p.strip()]
+    if len(partes) <= _MAX_TANDAS:
+        return partes or [texto.strip()]
+    # Si el modelo se pasó de tandas, junta el sobrante en la última.
+    return partes[:_MAX_TANDAS - 1] + ["\n\n".join(partes[_MAX_TANDAS - 1:])]
+
+
+async def _responder_en_tandas(update, context, texto: str):
+    """Manda la respuesta como varios mensajes cortos, con 'escribiendo…' y una pausa
+    proporcional entre tandas para que se sienta natural."""
+    partes = _en_tandas(texto)
+    for i, parte in enumerate(partes):
+        if i > 0:
+            await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+            await asyncio.sleep(min(1.6, 0.4 + len(parte) / 120))
+        await _responder(update.message, parte)
+
+
 def _historial_previo(user_id: str) -> list:
     """Mensajes anteriores (sin el turno actual) como objetos de LangChain."""
     return [
@@ -120,8 +146,9 @@ async def _procesar(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id:
 
         inbound = result.get("texto_original") or extra.get("texto") or "[mensaje]"
         guardar_mensaje(user_id, "inbound", inbound, update.message.message_id)
-        guardar_mensaje(user_id, "outbound", respuesta)
-        await _responder(update.message, respuesta)
+        # En el historial guardamos la respuesta sin los separadores de tanda.
+        guardar_mensaje(user_id, "outbound", _SEP.sub("\n\n", respuesta).strip())
+        await _responder_en_tandas(update, context, respuesta)
     except Exception as e:
         logger.error("Error invocando grafo: %s", e, exc_info=True)
         await update.message.reply_text("❌ Error interno. Intenta de nuevo.")
