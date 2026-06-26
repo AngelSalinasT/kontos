@@ -55,9 +55,14 @@ MEDIOS YA PROCESADOS
   si era ticket o captura bancaria, pregúntale a Ángel cuál es. Cuando responda, usa
   `clasificar_imagen_pendiente` con tipo 'ticket' o 'banco' según lo que diga.
 
+REGLA #1 — RESPONDE SOLO EL MENSAJE ACTUAL
+- Tu única tarea es responder el ÚLTIMO mensaje de Ángel (el más reciente). Todo lo anterior es
+  contexto histórico YA ATENDIDO: no lo vuelvas a responder ni lo continúes. Si tu respuesta
+  anterior terminó en una pregunta y Ángel cambia de tema o solo dice "gracias"/"ok", NO retomes
+  esa pregunta: atiende lo que dijo ahora. No reproceses fotos ni reportes registros de turnos
+  pasados.
+
 REGLAS DE HONESTIDAD
-- Responde SOLO al último mensaje de Ángel. El historial es contexto, no tareas pendientes; no
-  reproceses fotos ni reportes registros de turnos pasados.
 - NUNCA digas que registraste algo si en este turno no lo hizo una herramienta o el sistema.
   Reporta exactamente los números que te dieron las herramientas; no inventes filas ni montos.
 
@@ -90,8 +95,9 @@ FORMATO (Telegram)
 """
 
 _CONTINUA = ("\n\nSESIÓN: Vienes conversando con Ángel (los mensajes previos son de esta misma "
-             "plática). NO abras con saludo ni repitiendo su nombre; entra directo a lo que pide, "
-             "como quien sigue la conversación donde la dejó.")
+             "plática). NUNCA abras con saludo ('Hola', 'Hola Ángel', etc.) ni repitiendo su "
+             "nombre: ya se saludaron. Entra directo a lo que pide, como quien sigue la "
+             "conversación donde la dejó.")
 _NUEVA = ("\n\nSESIÓN: Es el primer mensaje tras un rato sin hablar. Puedes saludar breve una vez "
           "y entrar directo a lo que necesita.")
 
@@ -120,10 +126,30 @@ def _calendario(dias: int = 10) -> str:
             + "\n".join(lineas))
 
 
+def _texto_de(contenido) -> str:
+    """Texto plano de un mensaje (Gemini a veces lo entrega como lista de partes)."""
+    if isinstance(contenido, list):
+        return "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in contenido)
+    return contenido or ""
+
+
+def _ancla_turno(state) -> str:
+    """Mete el mensaje actual en el system prompt para anclar al modelo en él y que no
+    continúe hilos viejos (causa de que respondiera mensajes anteriores)."""
+    msgs = state.get("messages") or []
+    actual = _texto_de(msgs[-1].content).strip() if msgs else ""
+    return (
+        "\n\nMENSAJE ACTUAL (lo ÚNICO que debes responder ahora):\n«" + actual + "»\n"
+        "Todo lo demás del historial es contexto YA ATENDIDO: no lo vuelvas a responder ni "
+        "continúes un tema anterior, AUNQUE tu respuesta previa haya terminado en una pregunta "
+        "abierta. Responde solo a este mensaje actual. Si es un simple 'gracias', 'ok' o saludo, "
+        "responde breve y acorde — no retomes el tema de antes.")
+
+
 def build_prompt(state):
     """Arma la lista de mensajes para el agente: system prompt + directivas del turno + historial."""
     extra = _CONTINUA if get_continua_sesion() else _NUEVA
     if get_imagen_pendiente():
         extra += _PENDIENTE
-    contenido = SYSTEM_PROMPT + extra + _calendario()
+    contenido = SYSTEM_PROMPT + extra + _calendario() + _ancla_turno(state)
     return [SystemMessage(content=contenido)] + state["messages"]
