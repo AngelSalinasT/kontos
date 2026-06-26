@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from graph import graph
 from persistence.historial import guardar_mensaje, cargar_historial, continua_sesion
 from context import set_user_context
+from stickers import sticker_para
 
 load_dotenv()
 
@@ -97,6 +98,18 @@ async def _responder(message, texto: str):
 _SEP = re.compile(r"\n?\s*///\s*\n?")
 _MAX_TANDAS = 3
 
+# El agente marca un sticker con [[sticker:VIBE]] (ver prompt). Lo extraemos del texto.
+_STICKER = re.compile(r"\[\[\s*sticker\s*:?\s*([a-zA-Zñáéíóú]*)\s*\]\]", re.IGNORECASE)
+
+
+def _extraer_sticker(texto: str) -> tuple[str, str | None]:
+    """Saca el marcador de sticker del texto. Devuelve (texto_limpio, vibe|None)."""
+    m = _STICKER.search(texto)
+    if not m:
+        return texto, None
+    vibe = (m.group(1) or "random").lower()
+    return _STICKER.sub("", texto).strip(), vibe
+
 
 def _en_tandas(texto: str) -> list[str]:
     partes = [p.strip() for p in _SEP.split(texto) if p.strip()]
@@ -144,11 +157,19 @@ async def _procesar(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id:
         respuesta = ("".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in raw)
                      if isinstance(raw, list) else raw)
 
+        respuesta, vibe = _extraer_sticker(respuesta)
         inbound = result.get("texto_original") or extra.get("texto") or "[mensaje]"
         guardar_mensaje(user_id, "inbound", inbound, update.message.message_id)
         # En el historial guardamos la respuesta sin los separadores de tanda.
         guardar_mensaje(user_id, "outbound", _SEP.sub("\n\n", respuesta).strip())
         await _responder_en_tandas(update, context, respuesta)
+        if vibe:
+            fid = sticker_para(vibe)
+            if fid:
+                try:
+                    await update.message.reply_sticker(fid)
+                except Exception as e:
+                    logger.warning("No pude mandar sticker (%s): %s", vibe, e)
     except Exception as e:
         logger.error("Error invocando grafo: %s", e, exc_info=True)
         await update.message.reply_text("❌ Error interno. Intenta de nuevo.")
