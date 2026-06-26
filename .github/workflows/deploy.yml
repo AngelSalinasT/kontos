@@ -54,6 +54,12 @@ jobs:
           ./venv/bin/python -m py_compile \
             $(find . -name '*.py' -not -path './venv/*' -not -path './.deploy_bak/*')
 
+      - name: Test de aislamiento de datos (bloquea el deploy si falla)
+        run: |
+          cd "$APP_DIR"
+          DATABASE_PATH=/tmp/kontos_aislamiento_ci.db ./venv/bin/python test_aislamiento.py
+          rm -f /tmp/kontos_aislamiento_ci.db
+
       - name: Reiniciar servicio
         run: sudo systemctl restart "$SERVICE"
 
